@@ -30,6 +30,14 @@ with st.sidebar:
         index=cat_idx,
     )
 
+    st.divider()
+
+    if st.button("Recarregar dados"):
+        st.cache_data.clear()
+        st.success("Dados recarregados")
+        st.rerun()
+
+
 # --- salvar no estado e na URL ---
 st.session_state.categoria = categoria
 st.query_params.categoria = categoria
