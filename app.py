@@ -19,10 +19,15 @@ categorias = df["categoria"].unique()
 
 # --- sidebar ---
 with st.sidebar:
+    try:
+        cat_idx = categorias.tolist().index(st.session_state.categoria)
+    except ValueError:
+        cat_idx = 0
+
     categoria = st.selectbox(
         "Categoria",
         options=df["categoria"].unique(),
-        index=categorias.tolist().index(st.session_state.categoria),
+        index=cat_idx,
     )
 
 # --- salvar no estado e na URL ---
