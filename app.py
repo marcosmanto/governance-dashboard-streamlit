@@ -1,6 +1,14 @@
+import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Painel de Dados", layout="wide")
-
 st.title("📊 Painel Evolutivo de Dados")
-st.write("Primeira versão do app.")
+
+df = pd.DataFrame(
+    {
+        "data": pd.date_range("2025-01-01", periods=10),
+        "categoria": ["A", "B"] * 5,
+        "valor": range(10),
+    }
+)
+
+st.dataframe(df)
