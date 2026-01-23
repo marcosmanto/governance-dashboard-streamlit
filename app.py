@@ -61,7 +61,7 @@ col1, col2 = st.columns([2, 1])
 
 with col1:
     fig = grafico_evolucao(df_filtrado, categoria)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 with col2:
     st.metric(label="Total de registros", value=len(df_filtrado))

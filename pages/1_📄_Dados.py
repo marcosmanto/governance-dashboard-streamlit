@@ -8,8 +8,6 @@ df = carregar_dados()
 # reaproveita filtro da sessão
 categoria = st.session_state.get("categoria")
 
-print(f"Page dados: categoria {categoria}")
-
 if categoria:
     df = df[df["categoria"] == categoria]
     st.caption(f"Categoria selecionada: {categoria}")
