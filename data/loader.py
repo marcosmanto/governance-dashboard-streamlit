@@ -1,14 +1,17 @@
 import pandas as pd
+import requests
 import streamlit as st
-from data.database import criar_conexao
 
-
-@st.cache_resource
-def get_connection():
-    return criar_conexao()
+API_URL = "http://localhost:8000"
 
 
 @st.cache_data
 def carregar_dados():
-    conn = get_connection()
-    return pd.read_sql("SELECT * FROM registros", conn, parse_dates=["data"])
+    resp = requests.get(f"{API_URL}/registros")
+    resp.raise_for_status()
+    df = pd.DataFrame(resp.json())
+
+    if "data" in df.columns:
+        df.loc[:, "data"] = pd.to_datetime(df["data"], errors="coerce")
+
+    return df
