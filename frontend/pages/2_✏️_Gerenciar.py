@@ -1,17 +1,17 @@
 import time
 
+import requests
 import streamlit as st
-from backend.crud import (
+from frontend.loaders.registros import carregar_registros
+from frontend.services.api import (
     atualizar_registro,
+    criar_registro,
     deletar_registro,
-    inserir_registro,
 )
-from data.loader import carregar_dados
 
 st.title("✏️ Gerenciar registros")
 
-df = carregar_dados()
-
+df = carregar_registros()
 
 # ======================
 # ➕ INSERIR
@@ -38,11 +38,26 @@ if submitted:
         for erro in erros:
             st.error(erro, icon=":material/error:")
     else:
-        inserir_registro(str(data), categoria, int(valor))
-        st.cache_data.clear()
-        st.toast("Registro adicionado com sucesso.", icon=":material/check:")
-        time.sleep(5)
-        st.rerun()
+        try:
+            criar_registro(
+                {
+                    "data": str(data),
+                    "categoria": categoria.strip(),
+                    "valor": int(valor),
+                }
+            )
+
+            st.cache_data.clear()
+            st.toast("Registro adicionado com sucesso.", icon=":material/check:")
+            time.sleep(5)
+            st.rerun()
+        except requests.exceptions.HTTPError as e:
+            st.error(f"Erro da API ({e.response.status_code})")
+        except requests.exceptions.ConnectionError:
+            st.error("Não foi possível conectar à API.")
+        except Exception as e:
+            st.error(f"Erro inesperado: {e}")
+
 
 # ======================
 # ✏️ EDITAR / 🗑️ EXCLUIR
@@ -151,16 +166,21 @@ with st.form("form_editar", clear_on_submit=True):
     excluir = col2.form_submit_button("Excluir registro")
 
 if salvar:
-    atualizar_registro(
-        registro_id,
-        str(data_edit),
-        categoria_edit,
-        int(valor_edit),
-    )
-    st.cache_data.clear()
-    st.toast("Registro atualizado com sucesso.", icon=":material/check:")
-    time.sleep(5)
-    st.rerun()
+    try:
+        atualizar_registro(
+            registro_id,
+            {
+                "data": str(data_edit),
+                "categoria": categoria_edit.strip(),
+                "valor": int(valor_edit),
+            },
+        )
+        st.cache_data.clear()
+        st.toast("Registro atualizado com sucesso.", icon=":material/check:")
+        time.sleep(5)
+        st.rerun()
+    except Exception as e:
+        st.error(f"Erro ao atualizar: {e}")
 
 
 @st.dialog("⚠️ Confirmar exclusão")
@@ -176,12 +196,15 @@ def confirmar_exclusao(id_):
         st.rerun()
 
     if col2.button("Excluir definitivamente"):
-        deletar_registro(id_)
-        st.cache_data.clear()
-        st.error("Registro excluído.")
-        time.sleep(3)
-        limpar_busca()
-        st.rerun()
+        try:
+            deletar_registro(id_)
+            st.cache_data.clear()
+            st.error("Registro excluído.")
+            time.sleep(3)
+            limpar_busca()
+            st.rerun()
+        except Exception as e:
+            st.error(f"Erro ao excluir: {e}")
 
 
 if excluir:

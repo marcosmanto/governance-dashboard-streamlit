@@ -1,11 +1,12 @@
 import streamlit as st
 from charts.charts import grafico_evolucao
-from data.loader import carregar_dados
+
+from frontend.loaders.registros import carregar_registros
 
 st.set_page_config(page_title="Painel Evolutivo de Dados", layout="wide")
 st.title("📊 Painel Evolutivo de Dados")
 
-df = carregar_dados()
+df = carregar_registros()
 
 # --- ler query params ---
 query_params = st.query_params

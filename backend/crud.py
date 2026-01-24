@@ -14,7 +14,7 @@ def listar_registros():
     ]
 
 
-def inserir_registro(data, categoria, valor):
+def inserir_registro(registro):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -22,13 +22,13 @@ def inserir_registro(data, categoria, valor):
         INSERT INTO registros (data, categoria, valor)
         VALUES (?, ?, ?)
         """,
-        (data, categoria, valor),
+        (registro.data, registro.categoria, registro.valor),
     )
     conn.commit()
     conn.close()
 
 
-def atualizar_registro(id_, data, categoria, valor):
+def atualizar_registro(id_, registro):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -37,7 +37,7 @@ def atualizar_registro(id_, data, categoria, valor):
         SET data = ?, categoria = ?, valor = ?
         WHERE id = ?
         """,
-        (data, categoria, valor, id_),
+        (registro.data, registro.categoria, registro.valor, id_),
     )
     conn.commit()
     conn.close()
