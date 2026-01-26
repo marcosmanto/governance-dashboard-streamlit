@@ -5,8 +5,9 @@ from fastapi import FastAPI
 from backend.crud import (
     atualizar_registro,
     deletar_registro,
-    inserir_registro,
     listar_registros,
+    # inserir_registro,
+    upsert_registro,
 )
 from backend.models import RegistroIn, RegistroOut
 
@@ -20,7 +21,8 @@ def get_registros():
 
 @app.post("/registros", status_code=201)
 def post_registro(registro: RegistroIn):
-    inserir_registro(registro)
+    # inserir_registro(registro)
+    upsert_registro(registro)
     return {"message": "Registro inserido com sucesso"}
 
 
