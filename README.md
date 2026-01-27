@@ -21,7 +21,7 @@ set PYTHONPATH=%CD% && uvicorn backend.main:app --reload
 
 ```bat
 cd caminho\para\pasta-acima-ou-raiz\do\projeto
-set "PYTHONPATH=%CD%" && streamlit run frontend\app.py
+set "PYTHONPATH=%CD%" && streamlit run frontend\Home.py
 ```
 
 > Dica (PowerShell):
@@ -31,7 +31,7 @@ set "PYTHONPATH=%CD%" && streamlit run frontend\app.py
 > uvicorn backend.main:app --reload
 > # Em outra aba
 > $env:PYTHONPATH = (Get-Location).Path
-> streamlit run frontend/app.py
+> streamlit run frontend/Home.py
 > ```
 
 ### 2) Linux / macOS (bash/zsh)

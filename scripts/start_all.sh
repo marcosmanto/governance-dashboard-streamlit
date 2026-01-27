@@ -21,5 +21,5 @@ fi
 [ "$READY" -eq 1 ] && echo "[ok] backend no ar em http://127.0.0.1:8000" || echo "[info] seguindo sem checar disponibilidade do backend"
 
 # Streamlit em primeiro plano
-exec streamlit run frontend/app.py
+exec streamlit run frontend/Home.py
 ``
