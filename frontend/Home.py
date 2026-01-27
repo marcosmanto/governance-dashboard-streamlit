@@ -4,11 +4,16 @@ from charts.charts import grafico_evolucao
 from frontend.app_config import init_page
 from frontend.loaders.registros import carregar_registros
 
-init_page(page_title="Home • Painel", page_icon=":house:", wide=True)
+api = st.session_state.get("api")
 
+if api is None:
+    st.switch_page("pages/0_🔐_Login.py")
+    st.stop()
+
+init_page(page_title="Home • Painel", page_icon=":house:", wide=True)
 st.title("📊 Painel Evolutivo de Dados")
 
-df = carregar_registros()
+df = carregar_registros(api)
 
 # --- ler query params ---
 query_params = st.query_params
@@ -22,6 +27,8 @@ categorias = df["categoria"].unique()
 
 # --- sidebar ---
 with st.sidebar:
+    user = st.session_state.get("user")
+
     try:
         cat_idx = categorias.tolist().index(st.session_state.categoria)
     except ValueError:
@@ -34,6 +41,12 @@ with st.sidebar:
     )
 
     st.divider()
+
+    if user:
+        st.markdown(f"👤 **{user['username']}** ({user['role']})")
+        if st.button("🚪 Logout"):
+            st.session_state.clear()
+            st.switch_page("pages/0_🔐_Login.py")
 
     if st.button("Recarregar dados"):
         st.cache_data.clear()

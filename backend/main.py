@@ -1,7 +1,9 @@
 from typing import List
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 
+from backend.auth.dependencies import get_current_user
+from backend.auth.permissions import require_role
 from backend.crud import (
     atualizar_registro,
     deletar_registro,
@@ -10,18 +12,22 @@ from backend.crud import (
     upsert_registro,
 )
 from backend.db.errors import DuplicateKeyError
-from backend.models import RegistroIn, RegistroOut
+from backend.models import RegistroIn, RegistroOut, User
 
 app = FastAPI(title="API Painel de Dados")
 
 
 @app.get("/registros", response_model=List[RegistroOut])
-def get_registros():
+def get_registros(user: User = Depends(get_current_user)):
     return listar_registros()
 
 
 @app.post("/registros", status_code=201)
-def post_registro(registro: RegistroIn):
+def post_registro(
+    registro: RegistroIn,
+    user: User = Depends(get_current_user),
+):
+    require_role("editor", "admin")(user)
     try:
         # inserir_registro(registro)
         upsert_registro(registro)
@@ -32,7 +38,12 @@ def post_registro(registro: RegistroIn):
 
 
 @app.put("/registros/{id_}")
-def put_registro(id_: int, registro: RegistroIn):
+def put_registro(
+    id_: int,
+    registro: RegistroIn,
+    user: User = Depends(get_current_user),
+):
+    require_role("editor", "admin")(user)
     ok = atualizar_registro(id_, registro)
     if not ok:
         raise HTTPException(status_code=404, detail="Registro não encontrado")
@@ -40,6 +51,15 @@ def put_registro(id_: int, registro: RegistroIn):
 
 
 @app.delete("/registros/{id_}")
-def delete_registro(id_: int):
+def delete_registro(
+    id_: int,
+    user: User = Depends(get_current_user),
+):
+    require_role("admin")(user)
     deletar_registro(id_)
     return {"message": "Registro excluído com sucesso"}
+
+
+@app.get("/me")
+def get_me(user: User = Depends(get_current_user)):
+    return user

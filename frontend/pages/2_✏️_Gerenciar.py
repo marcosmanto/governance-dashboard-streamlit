@@ -5,16 +5,30 @@ import streamlit as st
 
 from frontend.app_config import init_page
 from frontend.loaders.registros import carregar_registros
-from frontend.services.api import (
-    atualizar_registro,
-    criar_registro,
-    deletar_registro,
-)
+from frontend.services.errors import handle_api_error
+
+user = st.session_state.get("user")
+
+if user is None:
+    st.switch_page("pages/0_🔐_Login.py")
+    st.stop()
+
+role = user["role"]
+
+if role not in ("editor", "admin"):
+    st.warning("Você não tem permissão para editar registros.")
+    st.stop()
+
+api = st.session_state.get("api")
+
+if api is None:
+    st.switch_page("pages/0_🔐_Login.py")
+    st.stop()
 
 init_page(page_title="Gerenciar registros", page_icon=":pencil:")
 st.title("✏️ Gerenciar registros")
 
-df = carregar_registros()
+df = carregar_registros(api)
 
 # ======================
 # ➕ INSERIR
@@ -42,13 +56,15 @@ if submitted:
             st.error(erro, icon=":material/error:")
     else:
         try:
-            criar_registro(
+            resp = api.criar_registro(
                 {
                     "data": str(data),
                     "categoria": categoria.strip(),
                     "valor": int(valor),
                 }
             )
+
+            handle_api_error(resp)
 
             st.cache_data.clear()
             st.toast("Registro adicionado com sucesso.", icon=":material/check:")
@@ -166,11 +182,12 @@ with st.form("form_editar", clear_on_submit=True):
 
     col1, col2 = st.columns(2)
     salvar = col1.form_submit_button("Salvar alterações", type="primary")
-    excluir = col2.form_submit_button("Excluir registro")
+    if role == "admin":
+        excluir = col2.form_submit_button("Excluir registro")
 
 if salvar:
     try:
-        atualizar_registro(
+        resp = api.atualizar_registro(
             registro_id,
             {
                 "data": str(data_edit),
@@ -178,6 +195,7 @@ if salvar:
                 "valor": int(valor_edit),
             },
         )
+        handle_api_error(resp)
         st.cache_data.clear()
         st.toast("Registro atualizado com sucesso.", icon=":material/check:")
         time.sleep(5)
@@ -200,7 +218,8 @@ def confirmar_exclusao(id_):
 
     if col2.button("Excluir definitivamente"):
         try:
-            deletar_registro(id_)
+            resp = api.deletar_registro(id_)
+            handle_api_error(resp)
             st.cache_data.clear()
             st.error("Registro excluído.")
             time.sleep(3)
@@ -210,5 +229,6 @@ def confirmar_exclusao(id_):
             st.error(f"Erro ao excluir: {e}")
 
 
-if excluir:
-    confirmar_exclusao(registro_id)
+if role == "admin":
+    if excluir:
+        confirmar_exclusao(registro_id)
