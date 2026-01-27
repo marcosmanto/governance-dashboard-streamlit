@@ -2,6 +2,8 @@ import time
 
 import requests
 import streamlit as st
+
+from frontend.app_config import init_page
 from frontend.loaders.registros import carregar_registros
 from frontend.services.api import (
     atualizar_registro,
@@ -9,6 +11,7 @@ from frontend.services.api import (
     deletar_registro,
 )
 
+init_page(page_title="Gerenciar registros", page_icon=":pencil:")
 st.title("✏️ Gerenciar registros")
 
 df = carregar_registros()

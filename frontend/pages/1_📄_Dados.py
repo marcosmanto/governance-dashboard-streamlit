@@ -1,5 +1,9 @@
 import streamlit as st
+
 from data.loader import carregar_dados
+from frontend.app_config import init_page
+
+init_page(page_title="Dados detalhados", page_icon=":paper:")
 
 st.title("📄 Dados detalhados")
 

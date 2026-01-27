@@ -1,0 +1,4 @@
+
+[tool.ruff.lint]
+# Não aplicar fix para F401 (unused-import) nem quando "Fix All" estiver ativo.
+unfixable = ["F401"]

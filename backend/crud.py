@@ -1,38 +1,59 @@
-import sqlite3
+from typing import Any, Dict, List
 
-from backend.database import get_connection
-
-
-def listar_registros():
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM registros")
-    rows = cursor.fetchall()
-    conn.close()
-
-    return [
-        {"id": row[0], "data": row[1], "categoria": row[2], "valor": row[3]}
-        for row in rows
-    ]
+from backend.db import connect, execute, normalize_error, query
 
 
-def inserir_registro(registro, origem="streamlit"):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO registros (data, categoria, valor, origem) VALUES (?, ?, ?, ?)",
-        (
-            registro.data,
-            registro.categoria,
-            registro.valor,
-            origem,
-        ),
-    )
-    conn.commit()
-    conn.close()
+def listar_registros() -> List[Dict[str, Any]]:
+    conn = connect()
+    try:
+        rows = query(conn, "SELECT * FROM registros")
+        result = []
+        for r in rows:
+            if isinstance(r, dict) or hasattr(r, "keys"):  # sqlite3.Row
+                result.append(
+                    {
+                        "id": r["id"],
+                        "data": r["data"],
+                        "categoria": r["categoria"],
+                        "valor": r["valor"],
+                    }
+                )
+            else:
+                result.append(
+                    {
+                        "id": r[0],
+                        "data": r[1],
+                        "categoria": r[2],
+                        "valor": r[3],
+                    }
+                )
+        return result
+    finally:
+        conn.close()
 
 
-def upsert_registro(registro, origem="streamlit"):
+def inserir_registro(registro, origem: str = "streamlit") -> None:
+    conn = connect()
+    try:
+        execute(
+            conn,
+            "INSERT INTO registros (data, categoria, valor, origem) VALUES (:data, :categoria, :valor, :origem)",
+            {
+                "data": registro.data,
+                "categoria": registro.categoria,
+                "valor": registro.valor,
+                "origem": origem,
+            },
+        )
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        raise normalize_error(exc)
+    finally:
+        conn.close()
+
+
+def upsert_registro(registro, origem: str = "streamlit") -> None:
     """
     UP SERT VIA VIEW (vw_registros_upsert) — COMO FUNCIONA E IMPACTO NA CONSISTÊNCIA
 
@@ -83,20 +104,29 @@ def upsert_registro(registro, origem="streamlit"):
          quiser evitar lidar com erros de duplicidade no app.
        - Use UPDATE por id (id_) quando a edição for explícita de uma linha específica.
     """
-    conn = get_connection()
+    conn = connect()
     try:
-        cur = conn.cursor()
-        # Insere na VIEW; o gatilho INSTEAD OF converte em INSERT ... ON CONFLICT ... DO UPDATE
-        cur.execute(
-            "INSERT INTO vw_registros_upsert (data, categoria, valor, origem) VALUES (?, ?, ?, ?)",
-            (registro.data, registro.categoria, registro.valor, origem),
+        # Insere na VIEW; o gatilho INSTEAD OF converte em INSERT ... ON CONFLICT ... faz UPDATE
+        execute(
+            conn,
+            "INSERT INTO vw_registros_upsert (data, categoria, valor, origem) VALUES (:data, :categoria, :valor, :origem)",
+            {
+                "data": registro.data,
+                "categoria": registro.categoria,
+                "valor": registro.valor,
+                "origem": origem,
+            },
         )
         conn.commit()
+
+    except Exception as exc:
+        conn.rollback()
+        raise normalize_error(exc)
     finally:
         conn.close()
 
 
-def atualizar_registro(id_, registro):
+def atualizar_registro(id_, registro) -> bool:
     """
     Atualiza um registro por ID.
     - Não altera 'atualizado_em' manualmente; trigger cuida disso.
@@ -106,33 +136,45 @@ def atualizar_registro(id_, registro):
         False -> se nenhum registro com esse id_ foi encontrado
     """
 
-    conn = get_connection()
+    conn = connect()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
+        cur = execute(
+            conn,
             """
             UPDATE registros
-               SET data = ?, categoria = ?, valor = ?
-             WHERE id = ?
+               SET data = :data, categoria = :categoria, valor = :valor
+             WHERE id = :id
             """,
-            (registro.data, registro.categoria, registro.valor, id_),
+            {
+                "data": registro.data,
+                "categoria": registro.categoria,
+                "valor": registro.valor,
+                "id": id_,
+            },
         )
         conn.commit()
-        return cursor.rowcount == 1
-    except sqlite3.IntegrityError:
+        return cur.rowcount == 1
+
+    except Exception as exc:
         # ocorre se (data, categoria) já existir em outro registro (índice UNIQUE)
         conn.rollback()
-        raise
+        raise normalize_error(exc)
     finally:
         conn.close()
 
 
-def deletar_registro(id_):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "DELETE FROM registros WHERE id = ?",
-        (id_,),
-    )
-    conn.commit()
-    conn.close()
+def deletar_registro(id_) -> None:
+    conn = connect()
+    try:
+        execute(
+            conn,
+            "DELETE FROM registros WHERE id = :id",
+            {"id": id_},
+        )
+        conn.commit()
+
+    except Exception as exc:
+        conn.rollback()
+        raise normalize_error(exc)
+    finally:
+        conn.close()

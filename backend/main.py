@@ -1,6 +1,6 @@
 from typing import List
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from backend.crud import (
     atualizar_registro,
@@ -9,6 +9,7 @@ from backend.crud import (
     # inserir_registro,
     upsert_registro,
 )
+from backend.db.errors import DuplicateKeyError
 from backend.models import RegistroIn, RegistroOut
 
 app = FastAPI(title="API Painel de Dados")
@@ -21,14 +22,20 @@ def get_registros():
 
 @app.post("/registros", status_code=201)
 def post_registro(registro: RegistroIn):
-    # inserir_registro(registro)
-    upsert_registro(registro)
-    return {"message": "Registro inserido com sucesso"}
+    try:
+        # inserir_registro(registro)
+        upsert_registro(registro)
+        return {"message": "Registro inserido/atualizado (UPSERT) com sucesso"}
+    except DuplicateKeyError:
+        # Só ocorreria se você usar INSERT direto na tabela sem view, por exemplo.
+        raise HTTPException(status_code=409, detail="Duplicidade em (data, categoria)")
 
 
 @app.put("/registros/{id_}")
 def put_registro(id_: int, registro: RegistroIn):
-    atualizar_registro(id_, registro)
+    ok = atualizar_registro(id_, registro)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Registro não encontrado")
     return {"message": "Registro atualizado com sucesso"}
 
 

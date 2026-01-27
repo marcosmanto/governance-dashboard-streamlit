@@ -1,8 +1,4 @@
-import sqlite3
-from pathlib import Path
+from backend.db import connect as get_connection
 
-DB_PATH = Path(__file__).parent.parent / "data" / "dados.db"
-
-
-def get_connection():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
+# shim de compatibilidade para antigo código
+__all__ = ["get_connection"]
