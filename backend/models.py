@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -19,3 +19,17 @@ class RegistroIn(BaseModel):
 
 class RegistroOut(RegistroIn):
     id: int
+
+
+class AuditoriaOut(BaseModel):
+    id: int
+    timestamp: str
+    username: str
+    role: str
+    action: str
+    resource: str
+    resource_id: Optional[int]
+    payload_before: Optional[str]
+    payload_after: Optional[str]
+    endpoint: str
+    method: str

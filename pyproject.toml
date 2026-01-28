@@ -1,4 +1,7 @@
 
+[tool.ruff]
+line-length = 100   # ou 110/120, a seu gosto
+
 [tool.ruff.lint]
 # Não aplicar fix para F401 (unused-import) nem quando "Fix All" estiver ativo.
 unfixable = ["F401"]

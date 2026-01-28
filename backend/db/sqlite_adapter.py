@@ -24,9 +24,7 @@ def connect(dsn: str | None = None) -> sqlite3.Connection:
 _named_re = re.compile(r":([a-zA-Z_][a-zA-Z0-9_]*)")
 
 
-def _compile_sql(
-    sql: str, params: Dict[str, Any] | None
-) -> Tuple[str, Sequence[Any] | None]:
+def _compile_sql(sql: str, params: Dict[str, Any] | None) -> Tuple[str, Sequence[Any] | None]:
     if not params:
         return sql, None
     order: list[str] = _named_re.findall(sql)  # ordem de ocorrência

@@ -3,10 +3,41 @@ from typing import Any, Dict, List
 from backend.db import connect, execute, normalize_error, query
 
 
+def obter_registro_por_id(id_) -> Dict[str, Any] | None:
+    conn = connect()
+    try:
+        rows = query(
+            conn,
+            """
+            SELECT id, data, categoria, valor
+            FROM registros
+            WHERE id = :id
+            """,
+            {
+                "id": id_,
+            },
+        )
+        if not rows:
+            return None
+
+        row = rows[0]
+        return {
+            "id": row[0],
+            "data": row[1],
+            "categoria": row[2],
+            "valor": row[3],
+        }
+    except Exception as exc:
+        conn.rollback()
+        raise normalize_error(exc)
+    finally:
+        conn.close()
+
+
 def listar_registros() -> List[Dict[str, Any]]:
     conn = connect()
     try:
-        rows = query(conn, "SELECT * FROM registros")
+        rows = query(conn, "SELECT * FROM registros ORDER BY data DESC")
         result = []
         for r in rows:
             if isinstance(r, dict) or hasattr(r, "keys"):  # sqlite3.Row
@@ -126,6 +157,44 @@ def upsert_registro(registro, origem: str = "streamlit") -> None:
         conn.close()
 
 
+def atualizar_registro_com_auditoria(id_, registro):
+    """
+    Atualiza um registro por ID e retorna (antes, depois).
+    Retorna None se o registro não existir.
+    """
+
+    conn = connect()
+    try:
+        antes = obter_registro_por_id(id_)
+        if not antes:
+            return None
+
+        execute(
+            conn,
+            """
+            UPDATE registros
+               SET data = :data, categoria = :categoria, valor = :valor
+             WHERE id = :id
+            """,
+            {
+                "data": registro.data,
+                "categoria": registro.categoria,
+                "valor": registro.valor,
+                "id": id_,
+            },
+        )
+
+        conn.commit()
+        depois = obter_registro_por_id(id_)
+        return antes, depois
+
+    except Exception as exc:
+        conn.rollback()
+        raise normalize_error(exc)
+    finally:
+        conn.close()
+
+
 def atualizar_registro(id_, registro) -> bool:
     """
     Atualiza um registro por ID.
@@ -157,6 +226,27 @@ def atualizar_registro(id_, registro) -> bool:
 
     except Exception as exc:
         # ocorre se (data, categoria) já existir em outro registro (índice UNIQUE)
+        conn.rollback()
+        raise normalize_error(exc)
+    finally:
+        conn.close()
+
+
+def deletar_registro_com_auditoria(id_) -> None:
+    conn = connect()
+    try:
+        antes = obter_registro_por_id(id_)
+        if not antes:
+            return None
+
+        execute(
+            conn,
+            "DELETE FROM registros WHERE id = :id",
+            {"id": id_},
+        )
+        conn.commit()
+        return antes
+    except Exception as exc:
         conn.rollback()
         raise normalize_error(exc)
     finally:

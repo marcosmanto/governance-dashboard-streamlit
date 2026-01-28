@@ -52,3 +52,11 @@ class APIClient:
             auth=self.auth,
             timeout=self.timeout,
         )
+
+    def listar_auditoria(self, params: dict):
+        return requests.get(
+            f"{self.base_url}/auditoria",
+            params=params,
+            auth=self.auth,
+            timeout=self.timeout,
+        )

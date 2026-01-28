@@ -14,9 +14,7 @@ def carregar_registros(_api):
     resp = _api.listar_registros()
 
     if not resp.ok:
-        raise RuntimeError(
-            f"Erro ao carregar registros: {resp.status_code} - {resp.text}"
-        )
+        raise RuntimeError(f"Erro ao carregar registros: {resp.status_code} - {resp.text}")
 
     dados = resp.json()
     df = pd.DataFrame(dados)
