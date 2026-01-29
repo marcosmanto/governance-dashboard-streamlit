@@ -1,29 +1,42 @@
 import streamlit as st
 
+from frontend.app_config import init_page
 from frontend.services.api import APIClient
 
-if st.session_state.get("api") is not None:
-    st.switch_page("Home.py")
-    st.stop()
+API_BASE = "http://localhost:8000"
 
-BASE_URL = "http://localhost:8000"
+api = APIClient(
+    base_url=API_BASE,
+    access_token=st.session_state.get("access_token"),
+    refresh_token=st.session_state.get("refresh_token"),
+)
 
+st.session_state.api = api
+
+init_page(page_title="Login", page_icon="🔐")
 st.title("🔐 Login")
 
-if "api" not in st.session_state:
-    st.session_state.api = None
+with st.form("login", enter_to_submit=True):
+    username = st.text_input("Usuário")
+    password = st.text_input("Senha", type="password")
 
-username = st.text_input("Usuário")
-password = st.text_input("Senha", type="password")
+    if st.form_submit_button("Entrar", type="primary"):
+        try:
+            resp = api.login(username, password)
 
-if st.button("Entrar"):
-    api = APIClient(BASE_URL, username, password)
+            if resp.status_code != 200:
+                st.error("Usuário ou senha inválidos")
+                st.stop()
 
-    if api.test_auth():
-        me = api.me().json()
-        st.session_state.api = api
-        st.session_state.user = me
-        st.success("Login realizado com sucesso")
-        st.switch_page("Home.py")
-    else:
-        st.error("Usuário ou senha inválidos")
+            data = resp.json()
+
+            # 🔐 guardar sessão
+            st.session_state.access_token = data["access_token"]
+            st.session_state.refresh_token = data["refresh_token"]
+            st.session_state.user = data["user"]
+
+            st.success("Login realizado com sucesso")
+            st.switch_page("Home.py")
+
+        except Exception as e:
+            st.error(f"Erro ao conectar à API: {e}")

@@ -33,3 +33,16 @@ class AuditoriaOut(BaseModel):
     payload_after: Optional[str]
     endpoint: str
     method: str
+
+
+class UserLoginOut(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    user: dict
+
+
+class UserContext(BaseModel):
+    username: str
+    role: str
+    session_id: str

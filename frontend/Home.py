@@ -3,12 +3,20 @@ from charts.charts import grafico_evolucao
 
 from frontend.app_config import init_page
 from frontend.loaders.registros import carregar_registros
+from frontend.services.api import APIClient
 
-api = st.session_state.get("api")
-
-if api is None:
+if "access_token" not in st.session_state:
     st.switch_page("pages/0_🔐_Login.py")
     st.stop()
+
+api = APIClient(
+    base_url="http://localhost:8000",
+    access_token=st.session_state.access_token,
+    refresh_token=st.session_state.refresh_token,
+)
+
+st.session_state.api = api
+
 
 init_page(page_title="Home • Painel", page_icon=":house:", wide=True)
 st.title("📊 Painel Evolutivo de Dados")
@@ -42,9 +50,12 @@ with st.sidebar:
 
     st.divider()
 
+    st.success(st.session_state.get("access_token"))
+
     if user:
         st.markdown(f"👤 **{user['username']}** ({user['role']})")
         if st.button("🚪 Logout"):
+            api.logout()
             st.session_state.clear()
             st.switch_page("pages/0_🔐_Login.py")
 
@@ -52,6 +63,11 @@ with st.sidebar:
         st.cache_data.clear()
         st.success("Dados recarregados")
         st.rerun()
+
+    if st.button("Listar registros teste"):
+        resp = api.listar_registros()
+        st.success("Registros listados")
+        st.write(resp.json())
 
 
 # --- salvar no estado e na URL ---

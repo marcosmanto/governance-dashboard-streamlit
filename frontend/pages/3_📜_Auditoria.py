@@ -1,5 +1,3 @@
-from datetime import date
-
 import pandas as pd
 import streamlit as st
 
@@ -66,8 +64,6 @@ if data_inicio:
     params["data_inicio"] = data_inicio.isoformat()
 
 if data_fim:
-    print("***********************")
-    print(data_fim, data_fim.isoformat())
     params["data_fim"] = data_fim.isoformat()
 
 try:

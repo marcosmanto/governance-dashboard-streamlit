@@ -1,10 +1,10 @@
 from fastapi import HTTPException, status
 
-from backend.models import User
+from backend.models import UserContext
 
 
 def require_role(*allowed_roles: str):
-    def checker(user: User):
+    def checker(user: UserContext):
         if user.role not in allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
