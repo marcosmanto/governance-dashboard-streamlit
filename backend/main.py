@@ -5,6 +5,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 
 from backend.audit.middleware import AuditMiddleware
 from backend.audit.service import registrar_evento
+from backend.audit.verify import verificar_integridade_auditoria
 from backend.auth.dependencies import get_current_user
 from backend.auth.jwt import decode_token
 from backend.auth.permissions import require_role
@@ -28,6 +29,7 @@ from backend.crud import (
     upsert_registro,
 )
 from backend.crud_auditoria import listar_auditoria
+from backend.db import connect
 from backend.db.errors import DuplicateKeyError
 from backend.models import AuditoriaOut, RegistroIn, RegistroOut, User, UserLoginOut
 
@@ -223,3 +225,13 @@ def cleanup_sessions_revoked(user=Depends(get_current_user)):
         "deleted_sessions": count,
         "message": "Sessões revogadas foram excluídas com sucesso",
     }
+
+
+@app.get("/admin/audit/verify")
+def verify_audit_chain(user=Depends(get_current_user)):
+    require_role("admin")(user)
+    conn = connect()
+    try:
+        return verificar_integridade_auditoria(conn)
+    finally:
+        conn.close()
