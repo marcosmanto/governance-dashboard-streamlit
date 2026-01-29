@@ -4,3 +4,4 @@ plotly
 fastapi
 uvicorn
 python-jose[cryptography]
+pydantic-settings

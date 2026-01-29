@@ -1,8 +1,7 @@
-# backend/db/__init__.py
-import os
+from backend.core.config import settings
 
-_BACKEND = os.getenv("DB_BACKEND", "sqlite").lower()
-_DSN = os.getenv("DB_DSN")  # para sqlite: caminho do arquivo | para postgres: URL
+_BACKEND = settings.DB_BACKEND
+_DSN = settings.DB_DSN
 
 if _BACKEND == "sqlite":
     from . import sqlite_adapter as _adapter

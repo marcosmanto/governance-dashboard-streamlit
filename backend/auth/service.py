@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException
 
-from backend.auth.config import ACCESS_TOKEN_EXPIRE, REFRESH_TOKEN_EXPIRE
 from backend.auth.jwt import create_token
+from backend.core.config import ACCESS_TOKEN_EXPIRE, REFRESH_TOKEN_EXPIRE
 from backend.db import connect, execute, query
 
 

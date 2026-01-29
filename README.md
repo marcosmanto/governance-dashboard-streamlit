@@ -86,3 +86,31 @@ Depois execute:
 - **Tudo junto:** `./scripts/start_all.sh`
 
 > Todos os scripts ajustam `PYTHONPATH` para a raiz do projeto antes de iniciar os serviços.
+
+## ⚙️ Configuração do Ambiente (.env)
+
+Este projeto utiliza variáveis de ambiente centralizadas para configuração
+de segurança, banco de dados e tempo de expiração de sessões.
+
+### 📁 Arquivo `.env`
+
+Crie um arquivo `.env` **na raiz do projeto** (mesmo nível de `backend/` e `frontend/`).
+
+Exemplo:
+
+```env
+# Ambiente
+ENV=dev
+
+# JWT
+JWT_SECRET=uma-chave-secreta-forte
+JWT_ALGORITHM=HS256
+
+# Expiração de tokens
+ACCESS_TOKEN_EXPIRE_MINUTES=15
+REFRESH_TOKEN_EXPIRE_DAYS=7
+
+# Database
+DB_BACKEND=sqlite
+DB_DSN=./data/dados.db
+```
