@@ -32,6 +32,7 @@ from backend.crud_auditoria import listar_auditoria
 from backend.db import connect
 from backend.db.errors import DuplicateKeyError
 from backend.models import AuditoriaOut, RegistroIn, RegistroOut, User, UserLoginOut
+from backend.users.service import authenticate_user
 
 app = FastAPI(title="API Painel de Dados")
 app.add_middleware(AuditMiddleware)
@@ -157,27 +158,20 @@ def logout(user=Depends(get_current_user)):
 
 @app.post("/login", response_model=UserLoginOut)
 def login(username: str, password: str):
-    # ⚠️ TEMPORÁRIO (igual você já fazia antes)
-    # depois podemos trocar por hash + banco
-    if username == "admin" and password == "admin":
-        role = "admin"
-    elif username == "editor" and password == "editor":
-        role = "editor"
-    elif username == "leitor" and password == "leitor":
-        role = "leitor"
-    else:
+    user = authenticate_user(username, password)
+    if not user:
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
-    access_token, refresh_token = login_user(username, role)
+    access_token, refresh_token = login_user(
+        user["username"],
+        user["role"],
+    )
 
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
-        "user": {
-            "username": username,
-            "role": role,
-        },
+        "user": user,
     }
 
 

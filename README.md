@@ -114,3 +114,112 @@ REFRESH_TOKEN_EXPIRE_DAYS=7
 DB_BACKEND=sqlite
 DB_DSN=./data/dados.db
 ```
+
+## 🔐 Auditoria e Governança de Dados
+
+Este projeto implementa um **sistema de auditoria avançado**, projetado para **ambientes institucionais**, com foco em **integridade, rastreabilidade e não-repúdio**.
+
+---
+
+### 🧾 Trilha de Auditoria Completa (Before / After)
+
+Toda operação de **mutação de dados** (`POST`, `PUT`, `DELETE`) gera automaticamente um evento de auditoria contendo:
+
+- Usuário responsável
+- Perfil (role)
+- Timestamp em UTC
+- Ação executada
+- Recurso afetado
+- Identificador do registro
+- **Estado anterior (`payload_before`)**
+- **Estado posterior (`payload_after`)**
+- Endpoint e método HTTP
+
+Isso permite reconstruir **exatamente o que mudou, quando e por quem**.
+
+---
+
+### 🔗 Cadeia Criptográfica de Auditoria (Blockchain-style)
+
+Os eventos de auditoria são protegidos por uma **cadeia de hash SHA-256**, inspirada em conceitos de blockchain:
+
+- Cada evento possui um `event_hash`
+- Cada evento referencia o `prev_hash` do evento anterior
+- O hash é calculado a partir de:
+  - metadados do evento
+  - payload _before / after_
+  - hash do evento anterior
+
+📌 **Qualquer alteração retroativa em um evento invalida toda a cadeia subsequente.**
+
+---
+
+### 🧪 Verificação de Integridade
+
+O backend expõe um endpoint administrativo que:
+
+- Recalcula toda a cadeia de hash
+- Detecta:
+  - eventos adulterados
+  - remoções
+  - inserções fora de ordem
+- Identifica exatamente:
+  - o ponto de falha
+  - o evento comprometido
+  - o motivo da inconsistência
+
+---
+
+### 🖥️ Painel Visual de Integridade (Streamlit)
+
+O frontend possui uma tela dedicada de **Integridade da Auditoria**, com:
+
+- Indicador visual de status:
+  - 🟢 Cadeia íntegra
+  - 🔴 Violação detectada
+- Exibição do ponto exato de falha
+- Botão para **reexecutar a verificação**
+- Exportação dos resultados para análise externa
+
+---
+
+### 🚨 Detecção de Violação e Evidência
+
+O sistema foi projetado para:
+
+- Detectar adulterações automaticamente
+- Gerar evidência técnica verificável
+- Servir como base para:
+  - auditorias internas
+  - investigações
+  - compliance regulatório
+
+---
+
+### 🏛️ Princípios Atendidos
+
+A arquitetura de auditoria atende aos seguintes princípios:
+
+- Imutabilidade dos registros
+- Não-repúdio
+- Rastreabilidade completa
+- Evidência forense
+- Governança e accountability
+
+---
+
+### ⚠️ Importante
+
+- **Eventos de auditoria nunca são alterados**
+- Qualquer modificação de dados gera **um novo evento**
+- O passado permanece imutável e verificável
+
+---
+
+### 📌 Casos de Uso
+
+- Governança de dados
+- Ambientes regulados
+- Sistemas administrativos
+- Trilhas de auditoria institucionais
+- Estudos de arquitetura segura

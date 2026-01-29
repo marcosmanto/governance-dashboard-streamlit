@@ -6,18 +6,6 @@ from frontend.app_config import init_page
 
 init_page(page_title="Integridade da Auditoria", page_icon="🔐")
 
-st.title("🔐 Integridade da Auditoria")
-
-col1, col2 = st.columns([3, 1])
-
-with col2:
-    if st.button(
-        "🔄 Reexecutar verificação",
-        use_container_width=True,
-    ):
-        st.rerun()
-    st.space()
-
 api = st.session_state.get("api")
 user = st.session_state.get("user")
 
@@ -29,6 +17,17 @@ if user["role"] != "admin":
     st.error("Acesso restrito a administradores.")
     st.stop()
 
+st.title("🔐 Integridade da Auditoria")
+
+col1, col2 = st.columns([3, 1])
+
+with col2:
+    if st.button(
+        "🔄 Reexecutar verificação",
+        use_container_width=True,
+    ):
+        st.rerun()
+    st.space()
 
 # ============================
 # 🔎 VERIFICAÇÃO DA CADEIA
