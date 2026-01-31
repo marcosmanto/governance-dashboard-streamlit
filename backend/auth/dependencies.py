@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+from jose import ExpiredSignatureError, JWTError, jwt
 
 from backend.core.config import settings
 from backend.db import connect, query
@@ -27,9 +27,13 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
             rows = query(
                 conn,
                 """
-                SELECT revoked, expires_at
-                  FROM user_sessions
-                 WHERE id = :id
+                SELECT
+                    s.revoked,
+                    s.expires_at,
+                    u.must_change_password
+                  FROM user_sessions s
+                  JOIN users u ON u.username = s.username
+                 WHERE s.id = :id
                 """,
                 {"id": session_id},
             )
@@ -46,11 +50,42 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         if datetime.fromisoformat(session["expires_at"]) < datetime.now(timezone.utc):
             raise HTTPException(status_code=401)
 
+        if rows[0]["must_change_password"]:
+            raise HTTPException(status_code=403, detail="PASSWORD_CHANGE_REQUIRED")
+
         # return {"username": username, "role": role, "session_id": session_id}
         return UserContext(
             username=username,
             role=role,
             session_id=session_id,
+            must_change_password=bool(rows[0]["must_change_password"]),
         )
     except JWTError:
         raise HTTPException(status_code=401, detail="Erro ao decodificar o token")
+
+
+def get_current_user_allow_password_change(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+    except ExpiredSignatureError:
+        # 🔑 Access token expirou → frontend tentará refresh
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="TOKEN_EXPIRED",
+        )
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="INVALID_TOKEN",
+        )
+
+    return UserContext(
+        username=payload.get("sub"),
+        role=payload.get("role"),
+        session_id=payload.get("sid"),
+        must_change_password=True,
+    )

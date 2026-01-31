@@ -32,10 +32,14 @@ from backend.crud_auditoria import listar_auditoria
 from backend.db import connect
 from backend.db.errors import DuplicateKeyError
 from backend.models import AuditoriaOut, RegistroIn, RegistroOut, User, UserLoginOut
+from backend.users.admin import router as admin_router
 from backend.users.service import authenticate_user
 
-app = FastAPI(title="API Painel de Dados")
+app = FastAPI(title="Governance Dashboard API")
+
 app.add_middleware(AuditMiddleware)
+# 🔐 Rotas administrativas
+app.include_router(admin_router)
 
 
 @app.get("/registros", response_model=List[RegistroOut])
@@ -152,7 +156,7 @@ def get_auditoria(
 
 @app.post("/logout")
 def logout(user=Depends(get_current_user)):
-    logout_session(user["session_id"])
+    logout_session(user.session_id)
     return {"message": "Logout realizado com sucesso"}
 
 
@@ -167,11 +171,20 @@ def login(username: str, password: str):
         user["role"],
     )
 
+    if user["must_change_password"]:
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "must_change_password": True,
+            "user": None,
+        }
+
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
         "user": user,
+        "must_change_password": False,
     }
 
 

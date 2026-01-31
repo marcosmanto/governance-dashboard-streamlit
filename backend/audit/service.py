@@ -31,8 +31,14 @@ def registrar_evento(
     payload_after: dict | None,
     endpoint: str,
     method: str,
+    conn=None,
 ):
-    conn = connect()
+    owns_conn = False
+
+    if conn is None:
+        conn = connect()
+        owns_conn = True
+
     try:
         # 1️⃣ Normalizar payloads ANTES (string única e determinística) e gerar timestamp
         payload_before_json = (
@@ -113,9 +119,13 @@ def registrar_evento(
             },
         )
 
-        conn.commit()
+        if owns_conn:
+            conn.commit()
+
     except Exception as exc:
-        conn.rollback()
+        if owns_conn:
+            conn.rollback()
         raise normalize_error(exc)
     finally:
-        conn.close()
+        if owns_conn:
+            conn.close()

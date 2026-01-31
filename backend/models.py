@@ -39,10 +39,14 @@ class UserLoginOut(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
-    user: dict
+    user: dict | None = None
+    must_change_password: bool = False
 
 
 class UserContext(BaseModel):
     username: str
     role: str
     session_id: str
+    must_change_password: bool = False
+    is_active: bool = True
+    created_at: Optional[str] = None
