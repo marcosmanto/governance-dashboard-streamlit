@@ -50,6 +50,18 @@ class APIClient:
             **kwargs,
         )
 
+        if resp.status_code == 403:
+            try:
+                detail = resp.json().get("detail")
+            except Exception:
+                detail = None
+
+            if detail == "PASSWORD_CHANGE_REQUIRED":
+                st.session_state.force_password_change = True
+                st.switch_page("pages/7_🔑_Change_Password.py")
+                st.stop()
+
+        # 🔁 fluxo normal de refresh
         if resp.status_code != 401:
             return resp
 
