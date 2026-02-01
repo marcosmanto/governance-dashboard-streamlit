@@ -53,7 +53,7 @@ with st.form("login", enter_to_submit=True):
                 access_token=data["access_token"],
                 refresh_token=data["refresh_token"],
             )
-            print(data)
+
             # 🚨 CASO ESPECIAL: senha pendente
             if data.get("must_change_password"):
                 st.session_state.force_password_change = True
