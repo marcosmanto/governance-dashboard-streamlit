@@ -55,8 +55,8 @@ with st.sidebar:
     if user:
         st.markdown(f"👤 **{user['username']}** ({user['role']})")
         if st.button("🚪 Logout"):
-            api.logout()
             st.session_state.clear()
+            api.logout()
             st.switch_page("pages/0_🔐_Login.py")
 
     if st.button("Recarregar dados"):

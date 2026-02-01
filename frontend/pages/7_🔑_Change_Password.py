@@ -5,10 +5,12 @@ from frontend.services.api import APIClient
 # 🚨 Se não existir dados de sessão direciona ao login
 api = st.session_state.get("api")
 user = st.session_state.get("user")
+must_change_password = st.session_state.get("must_change_password")
 
-if not api:
-    st.switch_page("pages/0_🔐_Login.py")
-    st.stop()
+if must_change_password is not None:
+    if not api or not user:
+        st.switch_page("pages/0_🔐_Login.py")
+        st.stop()
 
 st.title(
     f"🔑 Troca {'obrigatória ' if st.session_state.get('force_password_change') else ''}de senha"

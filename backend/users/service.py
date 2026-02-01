@@ -115,7 +115,7 @@ def resetar_senha_admin(username: str, admin_user: UserContext):
             action="RESET_PASSWORD",
             resource="users",
             resource_id=None,
-            payload_before=None,
+            payload_before={"username": username},
             payload_after=None,
             endpoint="/admin/users/reset-password",
             method="POST",

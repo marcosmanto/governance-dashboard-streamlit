@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 .env
+# Backups de bancos na pasta data
+/data/dados.bak_*.db

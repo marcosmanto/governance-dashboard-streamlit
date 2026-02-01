@@ -60,6 +60,7 @@ with st.form("login", enter_to_submit=True):
                 st.switch_page("pages/7_🔑_Change_Password.py")
                 st.stop()
 
+            st.session_state.force_password_change = False
             st.session_state.user = data["user"]
             st.success("Login realizado com sucesso")
             st.switch_page("Home.py")
