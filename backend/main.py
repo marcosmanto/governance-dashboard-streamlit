@@ -33,6 +33,7 @@ from backend.db import connect
 from backend.db.errors import DuplicateKeyError
 from backend.models import AuditoriaOut, RegistroIn, RegistroOut, User, UserLoginOut
 from backend.users.admin import router as admin_router
+from backend.users.users import router as users_router
 from backend.users.service import authenticate_user
 
 app = FastAPI(title="Governance Dashboard API")
@@ -40,6 +41,8 @@ app = FastAPI(title="Governance Dashboard API")
 app.add_middleware(AuditMiddleware)
 # 🔐 Rotas administrativas
 app.include_router(admin_router)
+# 🔓 Rotas públicas
+app.include_router(users_router)
 
 
 @app.get("/registros", response_model=List[RegistroOut])

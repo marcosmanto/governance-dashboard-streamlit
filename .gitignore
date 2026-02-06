@@ -3,3 +3,4 @@ __pycache__/
 .env
 # Backups de bancos na pasta data
 /data/dados.bak_*.db
+TEMP_todelete.txt

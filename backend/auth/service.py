@@ -97,6 +97,12 @@ def issue_new_access_token(payload: dict) -> str:
 
 
 def revoke_all_sessions(username: str):
+    """
+    Revoga todas as sessões ativas de um usuário.
+    """
+    if not username:
+        raise HTTPException(status_code=400, detail="Username obrigatório")
+
     conn = connect()
     try:
         execute(
@@ -105,11 +111,14 @@ def revoke_all_sessions(username: str):
             UPDATE user_sessions
                SET revoked = 1
              WHERE username = :username
-                AND revoked = 0
+               AND revoked = 0
             """,
             {"username": username},
         )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail="Erro ao revogar sessões do usuário")
     finally:
         conn.close()
 

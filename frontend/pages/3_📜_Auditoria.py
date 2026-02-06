@@ -4,11 +4,16 @@ import streamlit as st
 from frontend.app_config import init_page
 from frontend.services.errors import handle_api_error
 
+init_page(page_title="Auditoria", page_icon="📜")
+
 # =====================
 # 🔐 Segurança
 # =====================
 user = st.session_state.get("user")
 api = st.session_state.get("api")
+
+with st.spinner("Verificando usuário..."):
+    resp = api._request("GET", f"/admin/users/{user['username']}/check")
 
 if user is None or api is None:
     st.switch_page("pages/0_🔐_Login.py")
@@ -18,7 +23,6 @@ if user["role"] != "admin":
     st.warning("Acesso restrito a administradores.")
     st.stop()
 
-init_page(page_title="Auditoria", page_icon="📜")
 st.title("📜 Auditoria do Sistema")
 
 # =====================

@@ -58,7 +58,7 @@ class APIClient:
 
             if detail == "PASSWORD_CHANGE_REQUIRED":
                 st.session_state.force_password_change = True
-                st.switch_page("pages/7_🔑_Change_Password.py")
+                st.switch_page("pages/7_🔑_Troca_de_Senha.py")
                 st.stop()
 
         # 🔁 fluxo normal de refresh

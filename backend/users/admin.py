@@ -5,6 +5,7 @@ from backend.auth.dependencies import get_current_user, get_current_user_allow_p
 from backend.auth.permissions import require_role
 from backend.auth.service import login_user
 from backend.db import connect, query
+from backend.users.password_reset_service import limpar_tokens_reset_expirados_ou_usados
 from backend.users.schemas import ChangePasswordIn
 from backend.users.service import alterar_senha, resetar_senha_admin
 
@@ -30,6 +31,11 @@ def listar_usuarios(user=Depends(get_current_user)):
         conn.close()
 
 
+@router.get("/users/{username}/check")
+def check_user(username: str, user=Depends(get_current_user)):
+    return
+
+
 @router.post("/users/{username}/reset-password")
 def reset_password(username: str, user=Depends(get_current_user)):
     require_role("admin")(user)
@@ -39,6 +45,16 @@ def reset_password(username: str, user=Depends(get_current_user)):
         "username": username,
         "temporary_password": nova_senha,
         "warning": "Copie a senha agora. Ela não será exibida novamente.",
+    }
+
+
+@router.post("/password-reset/cleanup")
+def cleanup_password_reset_tokens(user=Depends(get_current_user)):
+    require_role("admin")(user)
+    deleted = limpar_tokens_reset_expirados_ou_usados()
+    return {
+        "deleted_tokens": deleted,
+        "message": "Tokens expirados/usados removidos com sucesso",
     }
 
 

@@ -2,8 +2,14 @@ import streamlit as st
 
 from frontend.app_config import init_page
 
+init_page(page_title="Administração", page_icon=":material/handyman:", wide=True)
+
+
 user = st.session_state.get("user")
 api = st.session_state.get("api")
+
+with st.spinner("Verificando usuário..."):
+    resp = api._request("GET", f"/admin/users/{user['username']}/check")
 
 if user is None or api is None:
     st.switch_page("pages/0_🔐_Login.py")
@@ -13,6 +19,7 @@ if user["role"] != "admin":
     st.warning("Acesso restrito a administradores.")
     st.stop()
 
+st.title("🛠️ Administração")
 
 # 1) Mostrar mensagem "flash" de sucesso (se existir) antes de desenhar o form
 _flash = st.session_state.pop("flash_success", None)

@@ -7,11 +7,22 @@ from frontend.app_config import init_page
 from frontend.loaders.registros import carregar_registros
 from frontend.services.errors import handle_api_error
 
+init_page(page_title="Gerenciar registros", page_icon=":pencil:")
+
 user = st.session_state.get("user")
+api = st.session_state.get("api")
+
+with st.spinner("Verificando usuário..."):
+    resp = api._request("GET", f"/admin/users/{user['username']}/check")
 
 if user is None:
     st.switch_page("pages/0_🔐_Login.py")
     st.stop()
+
+if api is None:
+    st.switch_page("pages/0_🔐_Login.py")
+    st.stop()
+
 
 role = user["role"]
 
@@ -19,13 +30,6 @@ if role not in ("editor", "admin"):
     st.warning("Você não tem permissão para editar registros.")
     st.stop()
 
-api = st.session_state.get("api")
-
-if api is None:
-    st.switch_page("pages/0_🔐_Login.py")
-    st.stop()
-
-init_page(page_title="Gerenciar registros", page_icon=":pencil:")
 st.title("✏️ Gerenciar registros")
 
 df = carregar_registros(api)

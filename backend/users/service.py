@@ -173,3 +173,47 @@ def alterar_senha(*, username: str, senha_atual: str, nova_senha: str):
         conn.commit()
     finally:
         conn.close()
+
+
+def resetar_senha_por_token(*, username: str, nova_senha: str):
+    """
+    Reseta a senha sem exigir a senha atual (uso com token válido).
+    """
+    try:
+        validar_senha(nova_senha)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    conn = connect()
+    try:
+        rows = query(
+            conn,
+            """
+            SELECT password_hash
+              FROM users
+             WHERE username = :username
+               AND is_active = 1
+            """,
+            {"username": username},
+        )
+
+        if not rows:
+            raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+        execute(
+            conn,
+            """
+            UPDATE users
+               SET password_hash = :password_hash,
+                   must_change_password = 0
+             WHERE username = :username
+            """,
+            {
+                "password_hash": hash_password(nova_senha),
+                "username": username,
+            },
+        )
+
+        conn.commit()
+    finally:
+        conn.close()
