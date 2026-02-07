@@ -223,3 +223,21 @@ A arquitetura de auditoria atende aos seguintes princípios:
 - Sistemas administrativos
 - Trilhas de auditoria institucionais
 - Estudos de arquitetura segura
+
+## 🔐 Reset de senha
+
+O sistema implementa um fluxo seguro de redefinição de senha:
+
+- Token criptograficamente seguro
+- Apenas hash do token é persistido
+- Token com expiração
+- Uso único
+- `/password-reset/cleanup` endpoint para limpeza de tokens de reset de senha expirados ou usados
+- Auditoria completa dos eventos
+
+Fluxo:
+
+1. `/forgot-password` gera token
+2. Token é enviado ao usuário
+3. `/reset-password` redefine senha
+4. Evento auditado

@@ -7,12 +7,12 @@ st.set_page_config(page_title="Administração de Usuários", layout="wide")
 api = st.session_state.get("api")
 user = st.session_state.get("user")
 
-with st.spinner("Verificando usuário..."):
-    resp = api._request("GET", f"/admin/users/{user['username']}/check")
-
 if not api or not user:
     st.switch_page("pages/0_🔐_Login.py")
     st.stop()
+
+with st.spinner("Verificando usuário..."):
+    resp = api._request("GET", f"/admin/users/{user['username']}/check")
 
 # 🔒 Página com acesso restrito ao perfil admin
 if user["role"] != "admin":
