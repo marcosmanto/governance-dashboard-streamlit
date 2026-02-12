@@ -8,9 +8,10 @@ from frontend.services.api import APIClient
 
 user = st.session_state.get("user")
 
-error_message = st.session_state.get("error_message")
-if error_message:
-    st.toast(st.session_state.get("error_message"))
+login_error_message = st.session_state.get("login_error_message")
+
+if login_error_message:
+    st.toast(st.session_state.get("login_error_message"))
 
 if user:
     st.info(
@@ -113,12 +114,12 @@ with st.container(
             type="primary",
             disabled=st.session_state.login_in_progress or not can_submit,
             on_click=lambda: st.session_state.update(
-                {"login_in_progress": True, "error_message": None}
+                {"login_in_progress": True, "login_error_message": None}
             ),
         )
 
-        if error_message:
-            st.error(error_message)
+        if login_error_message:
+            st.error(login_error_message)
 
         if submitted:
             st.toast("Login em andamento. Aguarde..", icon=":material/login:")
@@ -138,7 +139,7 @@ with st.container(
                         resp = api.login(st.session_state.get("login_username", ""), password)
 
                     if resp.status_code != 200:
-                        st.session_state.error_message = "Usuário ou senha inválidos"
+                        st.session_state.login_error_message = "Usuário ou senha inválidos"
                         # Não interrompe o app para manter o botão "Esqueci minha senha"
                         raise ValueError("LOGIN_INVALID")
 
@@ -154,6 +155,7 @@ with st.container(
                         access_token=data["access_token"],
                         refresh_token=data["refresh_token"],
                     )
+                    st.session_state.login_error_message = None
 
                     # 🚨 CASO ESPECIAL: senha pendente
                     if data.get("must_change_password"):
@@ -172,7 +174,8 @@ with st.container(
                         # erro já exibido acima
                         pass
                     else:
-                        st.error(f"Erro ao conectar à API: {e}")
+                        st.login_error_message = f"Erro ao conectar à API: {e}"
+                        # st.error(f"Erro ao conectar à API: {e}")
                 finally:
                     st.session_state.login_in_progress = False
                     st.rerun()

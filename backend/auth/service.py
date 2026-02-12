@@ -18,7 +18,7 @@ def login_user(username: str, role: str):
         rows = query(
             conn,
             """
-            SELECT password_changed_at
+            SELECT password_changed_at, password_expires_at
             FROM users
             WHERE username = :username
             """,
@@ -27,6 +27,11 @@ def login_user(username: str, role: str):
 
         if not rows:
             raise HTTPException(status_code=401, detail="Usuário inválido")
+
+        if rows[0]["password_expires_at"]:
+            expires_at = datetime.fromisoformat(rows[0]["password_expires_at"])
+            if expires_at < datetime.now(timezone.utc):
+                raise HTTPException(status_code=403, detail="PASSWORD_EXPIRED")
 
         password_changed_at = rows[0]["password_changed_at"]
 

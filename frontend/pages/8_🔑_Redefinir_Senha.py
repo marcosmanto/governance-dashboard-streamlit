@@ -8,6 +8,7 @@ API_BASE = "http://localhost:8000"
 init_page(page_title="Redefinir senha", page_icon="🔑")
 st.title("🔑 Redefinir senha")
 
+st.session_state.login_error_message = None
 token = st.text_input("Token de redefinição")
 new_password = st.text_input("Nova senha", type="password")
 confirm_password = st.text_input("Confirmar nova senha", type="password")

@@ -9,6 +9,7 @@ api = st.session_state.get("api")
 user = st.session_state.get("user")
 must_change_password = st.session_state.get("must_change_password")
 
+st.session_state.login_error_message = None
 error_message = st.session_state.get("error_message")
 if error_message:
     st.toast(st.session_state.get("error_message"))

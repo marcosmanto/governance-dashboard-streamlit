@@ -1,5 +1,11 @@
+import logging
+
 import requests
 import streamlit as st
+
+from backend.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class APIClient:
@@ -56,7 +62,11 @@ class APIClient:
             except Exception:
                 detail = None
 
-            if detail == "PASSWORD_CHANGE_REQUIRED":
+            if detail == "PASSWORD_CHANGE_REQUIRED" or detail == "PASSWORD_EXPIRED":
+                # ⚠️ Apenas em desenvolvimento, retorna o token no response
+                if settings.ENV == "dev":
+                    logger.warning(f"Password change required or expired. Detail: {detail}")
+
                 st.session_state.force_password_change = True
                 st.switch_page("pages/7_🔑_Troca_de_Senha.py")
                 st.stop()

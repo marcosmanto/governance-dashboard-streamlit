@@ -9,6 +9,7 @@ from frontend.services.errors import handle_api_error
 
 init_page(page_title="Gerenciar registros", page_icon=":pencil:")
 
+st.session_state.login_error_message = None
 user = st.session_state.get("user")
 api = st.session_state.get("api")
 

@@ -30,7 +30,8 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
                 SELECT
                     s.revoked,
                     s.expires_at,
-                    u.must_change_password
+                    u.must_change_password,
+                    u.password_expires_at
                   FROM user_sessions s
                   JOIN users u ON u.username = s.username
                  WHERE s.id = :id
@@ -44,12 +45,22 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
             raise HTTPException(status_code=401)
 
         session = rows[0]
+
+        # Sessão revogada
         if session["revoked"]:
             raise HTTPException(status_code=401)
 
+        # Access token expirou
         if datetime.fromisoformat(session["expires_at"]) < datetime.now(timezone.utc):
             raise HTTPException(status_code=401)
 
+        # 🔐 Expiração automática da senha (senha expirada por idade)
+        password_expires_at = session["password_expires_at"]
+        if password_expires_at:
+            if datetime.fromisoformat(password_expires_at) < datetime.now(timezone.utc):
+                raise HTTPException(status_code=403, detail="PASSWORD_EXPIRED")
+
+        # must_change_password = 1
         if rows[0]["must_change_password"]:
             raise HTTPException(status_code=403, detail="PASSWORD_CHANGE_REQUIRED")
 

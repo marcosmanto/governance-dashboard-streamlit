@@ -6,6 +6,7 @@ from frontend.services.errors import handle_api_error
 
 init_page(page_title="Auditoria", page_icon="📜")
 
+st.session_state.login_error_message = None
 # =====================
 # 🔐 Segurança
 # =====================

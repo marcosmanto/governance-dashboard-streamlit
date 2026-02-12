@@ -1,13 +1,14 @@
 import re
 import secrets
 import string
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 
 from backend.audit.service import registrar_evento
 from backend.auth.passwords import hash_password, verify_password
 from backend.auth.service import revoke_all_sessions
+from backend.core.config import settings
 from backend.db import connect, execute, query
 from backend.models import UserContext
 
@@ -164,13 +165,17 @@ def alterar_senha(*, username: str, senha_atual: str, nova_senha: str):
             UPDATE users
                SET password_hash = :password_hash,
                    must_change_password = 0,
-                   password_changed_at = :changed_at
+                   password_changed_at = :changed_at,
+                   password_expires_at = :expires_at
              WHERE username = :username
             """,
             {
                 "password_hash": hash_password(nova_senha),
                 "username": username,
                 "changed_at": datetime.now(timezone.utc).isoformat(),
+                "expires_at": (
+                    datetime.now(timezone.utc) + timedelta(days=settings.PASSWORD_VALIDITY_DAYS)
+                ).isoformat(),
             },
         )
 
@@ -212,11 +217,17 @@ def resetar_senha_por_token(*, username: str, nova_senha: str):
             UPDATE users
                SET password_hash = :password_hash,
                    must_change_password = 0
+                   password_changed_at = :changed_at,
+                   password_expires_at = :expires_at
              WHERE username = :username
             """,
             {
                 "password_hash": hash_password(nova_senha),
                 "username": username,
+                "changed_at": datetime.now(timezone.utc).isoformat(),
+                "expires_at": (
+                    datetime.now(timezone.utc) + timedelta(days=settings.PASSWORD_VALIDITY_DAYS)
+                ).isoformat(),
             },
         )
 

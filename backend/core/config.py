@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     DB_BACKEND: str = "sqlite"
     DB_DSN: str
 
+    # User Password Managment
+    PASSWORD_VALIDITY_DAYS: int = 30
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

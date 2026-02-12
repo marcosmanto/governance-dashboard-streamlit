@@ -6,6 +6,7 @@ from frontend.app_config import init_page
 
 init_page(page_title="Integridade da Auditoria", page_icon="🔐")
 
+st.session_state.login_error_message = None
 api = st.session_state.get("api")
 user = st.session_state.get("user")
 

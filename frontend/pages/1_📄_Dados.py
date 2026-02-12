@@ -6,6 +6,8 @@ from frontend.loaders.registros import carregar_registros
 
 api = st.session_state.get("api")
 
+st.session_state.login_error_message = None
+
 if api is None:
     st.switch_page("pages/0_🔐_Login.py")
     st.stop()

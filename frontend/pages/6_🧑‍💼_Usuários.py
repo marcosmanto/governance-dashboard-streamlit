@@ -3,6 +3,7 @@ import streamlit as st
 
 st.set_page_config(page_title="Administração de Usuários", layout="wide")
 
+st.session_state.login_error_message = None
 # 🚨 Se não existir dados de sessão direciona ao login
 api = st.session_state.get("api")
 user = st.session_state.get("user")
