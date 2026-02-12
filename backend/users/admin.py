@@ -69,11 +69,11 @@ def change_password(
             nova_senha=payload.new_password,
         )
 
-        # 🔐 cria nova sessão (zera contexto antigo)
-        access_token, refresh_token = login_user(
-            user.username,
-            user.role,
-        )
+        # # 🔐 cria nova sessão (zera contexto antigo)
+        # access_token, refresh_token = login_user(
+        #     user.username,
+        #     user.role,
+        # )
 
         registrar_evento(
             username=user.username,
@@ -87,14 +87,15 @@ def change_password(
             method="POST",
         )
 
-        return {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "user": {
-                "username": user.username,
-                "role": user.role,
-            },
-        }
+        return {"message": "Senha alterada com sucesso"}
+        # return {
+        #     "access_token": access_token,
+        #     "refresh_token": refresh_token,
+        #     "user": {
+        #         "username": user.username,
+        #         "role": user.role,
+        #     },
+        # }
 
     except HTTPException as exc:
         # ⚠️ Erros de negócio esperados (senha inválida, política, etc)

@@ -14,6 +14,23 @@ def login_user(username: str, role: str):
 
     conn = connect()
     try:
+        # 1️⃣ Buscar versão da senha
+        rows = query(
+            conn,
+            """
+            SELECT password_changed_at
+            FROM users
+            WHERE username = :username
+            """,
+            {"username": username},
+        )
+
+        if not rows:
+            raise HTTPException(status_code=401, detail="Usuário inválido")
+
+        password_changed_at = rows[0]["password_changed_at"]
+
+        # 2️⃣ Criar sessão
         execute(
             conn,
             """
@@ -33,8 +50,14 @@ def login_user(username: str, role: str):
     finally:
         conn.close()
 
+    # 3️⃣ Criar tokens
     access_token = create_token(
-        {"sub": username, "role": role, "sid": session_id},
+        {
+            "sub": username,
+            "role": role,
+            "sid": session_id,
+            "pwd": password_changed_at,  # 🔑 versão da senha
+        },
         ACCESS_TOKEN_EXPIRE,
     )
 
@@ -66,10 +89,15 @@ def logout_session(session_id: str):
 def issue_new_access_token(payload: dict) -> str:
     session_id = payload.get("sid")
     username = payload.get("sub")
+    pwd_token = payload.get("pwd")
+
+    if not session_id or not username or not pwd_token:
+        raise HTTPException(status_code=401, detail="Token inválido")
 
     conn = connect()
     try:
-        rows = query(
+        # 1️⃣ Validar sessão
+        session_rows = query(
             conn,
             """
             SELECT revoked, expires_at, role
@@ -78,32 +106,64 @@ def issue_new_access_token(payload: dict) -> str:
             """,
             {"id": session_id},
         )
+
+        if not session_rows:
+            raise HTTPException(status_code=401)
+
+        session = session_rows[0]
+
+        if session["revoked"]:
+            raise HTTPException(status_code=401)
+
+        # 2️⃣ Buscar versão atual da senha
+        user_rows = query(
+            conn,
+            """
+            SELECT password_changed_at
+            FROM users
+            WHERE username = :username
+            """,
+            {"username": username},
+        )
+
+        if not user_rows:
+            raise HTTPException(status_code=401, detail="Usuário inválido")
+
+        pwd_db = user_rows[0]["password_changed_at"]
+
+        # 3️⃣ Comparar versões
+        if pwd_token != pwd_db:
+            raise HTTPException(status_code=401, detail="PASSWORD_CHANGE")
     finally:
         conn.close()
 
-    if not rows:
-        raise HTTPException(status_code=401)
-
-    session = rows[0]
-    if session["revoked"]:
-        raise HTTPException(status_code=401)
-
+    # 4️⃣ Emitir novo access token
     access_token = create_token(
-        {"sub": username, "role": session["role"], "sid": session_id},
+        {
+            "sub": username,
+            "role": session["role"],
+            "sid": session_id,
+            "pwd": pwd_db,  # 🔑 sempre a versão atual
+        },
         ACCESS_TOKEN_EXPIRE,
     )
 
     return access_token
 
 
-def revoke_all_sessions(username: str):
+def revoke_all_sessions(username: str, conn=None):
     """
     Revoga todas as sessões ativas de um usuário.
     """
+
     if not username:
         raise HTTPException(status_code=400, detail="Username obrigatório")
 
-    conn = connect()
+    ows_connection = False
+    if conn is None:
+        ows_connection = True
+        conn = connect()
+
     try:
         execute(
             conn,
@@ -115,12 +175,16 @@ def revoke_all_sessions(username: str):
             """,
             {"username": username},
         )
-        conn.commit()
+
+        if ows_connection:
+            conn.commit()
     except Exception:
-        conn.rollback()
+        if ows_connection:
+            conn.rollback()
         raise HTTPException(status_code=500, detail="Erro ao revogar sessões do usuário")
     finally:
-        conn.close()
+        if ows_connection:
+            conn.close()
 
 
 def revoke_session_by_id(session_id: str):
