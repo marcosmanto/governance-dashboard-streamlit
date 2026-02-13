@@ -3,22 +3,24 @@ import json
 import streamlit as st
 
 from frontend.app_config import init_page
+from frontend.core.pages import Page
+from frontend.services.navigation import set_current_page
+from frontend.services.session import require_auth
+
+set_current_page(Page.INTEGRIDADE)
+
+api, user = require_auth()
 
 init_page(page_title="Integridade da Auditoria", page_icon="🔐")
 
 st.session_state.login_error_message = None
-api = st.session_state.get("api")
-user = st.session_state.get("user")
 
-if not api or not user:
-    st.switch_page("pages/0_🔐_Login.py")
-    st.stop()
-
-with st.spinner("Verificando usuário..."):
-    resp = api._request("GET", f"/admin/users/{user['username']}/check")
+# =====================
+# 🔐 Segurança
+# =====================
 
 if user["role"] != "admin":
-    st.error("Acesso restrito a administradores.")
+    st.warning("Acesso restrito a administradores.")
     st.stop()
 
 st.title("🔐 Integridade da Auditoria")

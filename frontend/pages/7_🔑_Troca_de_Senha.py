@@ -1,12 +1,14 @@
 from time import sleep
 
+import requests
 import streamlit as st
 
-# from frontend.services.api import APIClient
+from backend.core.config import settings
+from frontend.core.pages import Page
+from frontend.services.navigation import set_current_page
 
-# 🚨 Se não existir dados de sessão direciona ao login
-api = st.session_state.get("api")
-user = st.session_state.get("user")
+set_current_page(Page.CHANGE_PASSWORD)
+
 must_change_password = st.session_state.get("must_change_password")
 
 st.session_state.login_error_message = None
@@ -16,12 +18,8 @@ if error_message:
 
 # if must_change_password is not None:
 #     if not api or not user:
-#         st.switch_page("pages/0_🔐_Login.py")
+#         st.switch_page(Page.LOGIN.path)
 #         st.stop()
-
-if not api or not user:
-    st.switch_page("pages/0_🔐_Login.py")
-    st.stop()
 
 carregando = st.session_state.get("loading_password_change")
 
@@ -181,18 +179,19 @@ with st.form("change_password"):
             # st.session_state.clear()
             # st.success("Senha alterada com sucesso")
             # time.sleep(3)
-            # st.switch_page("pages/0_🔐_Login.py")
+            # st.switch_page(Page.LOGIN.path)
             # st.switch_page("Home.py")
 
 if carregando:
     with st.spinner("Validando senha e atualizando sessão..."):
-        resp = api._request(
-            "POST",
-            "/admin/change-password",
+        resp = requests.post(
+            f"{settings.API_BASE_URL}/admin/change-password",
+            headers={"Authorization": f"Bearer {st.session_state.access_token}"},
             json={
                 "old_password": old,
                 "new_password": new,
             },
+            timeout=10,
         )
 
     data = resp.json()
@@ -212,4 +211,4 @@ if carregando:
     st.session_state.clear()
     st.success("Senha alterada com sucesso")
     sleep(2)
-    st.switch_page("pages/0_🔐_Login.py")
+    st.switch_page(Page.LOGIN.path)

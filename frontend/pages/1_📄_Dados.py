@@ -4,19 +4,13 @@ import streamlit as st
 from frontend.app_config import init_page
 from frontend.loaders.registros import carregar_registros
 
-api = st.session_state.get("api")
-
 st.session_state.login_error_message = None
-
-if api is None:
-    st.switch_page("pages/0_🔐_Login.py")
-    st.stop()
 
 init_page(page_title="Dados detalhados", page_icon=":paper:")
 
 st.title("📄 Dados detalhados")
 
-df = carregar_registros(api)
+df = carregar_registros()
 
 # reaproveita filtro da sessão
 categoria = st.session_state.get("categoria")

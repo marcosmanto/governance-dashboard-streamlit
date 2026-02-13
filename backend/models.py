@@ -50,3 +50,5 @@ class UserContext(BaseModel):
     must_change_password: bool = False
     is_active: bool = True
     created_at: Optional[str] = None
+    password_expiring_soon: bool = False
+    password_days_remaining: Optional[int] = None

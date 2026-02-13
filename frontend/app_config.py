@@ -22,6 +22,3 @@ def init_page(
         initial_sidebar_state=sidebar_state,
         menu_items=menu_items,
     )
-
-
-# frontend/app_config.py

@@ -1,5 +1,7 @@
 import streamlit as st
 
+from frontend.core.pages import Page
+
 __all__ = ["handle_api_error"]
 
 # print(">>> carregando errors.py")
@@ -10,7 +12,7 @@ def handle_api_error(resp):
     if resp.status_code == 401:
         st.error("Sessão expirada ou credenciais inválidas.")
         st.session_state.api = None
-        st.switch_page("pages/0_🔐_Login.py")
+        st.switch_page(Page.LOGIN.path)
         st.stop()
 
     if resp.status_code == 403:

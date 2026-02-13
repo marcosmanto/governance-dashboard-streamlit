@@ -1,9 +1,12 @@
 import requests
 import streamlit as st
 
+from backend.core.config import settings
 from frontend.app_config import init_page
+from frontend.core.pages import Page
+from frontend.services.navigation import set_current_page
 
-API_BASE = "http://localhost:8000"
+set_current_page(Page.RESET_PASSWORD)
 
 init_page(page_title="Redefinir senha", page_icon="🔑")
 st.title("🔑 Redefinir senha")
@@ -23,7 +26,7 @@ if st.button("Redefinir", type="primary"):
     else:
         try:
             resp = requests.post(
-                f"{API_BASE}/reset-password",
+                f"{settings.API_BASE_URL}/reset-password",
                 json={"token": token.strip(), "new_password": new_password},
                 timeout=10,
             )

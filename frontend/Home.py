@@ -2,26 +2,31 @@ import streamlit as st
 from charts.charts import grafico_evolucao
 
 from frontend.app_config import init_page
+from frontend.core.pages import Page
 from frontend.loaders.registros import carregar_registros
-from frontend.services.api import APIClient
+from frontend.services.session import require_auth
 
-if "access_token" not in st.session_state:
-    st.switch_page("pages/0_🔐_Login.py")
-    st.stop()
+st.session_state["_page"] = "home"
 
-api = APIClient(
-    base_url="http://localhost:8000",
-    access_token=st.session_state.access_token,
-    refresh_token=st.session_state.refresh_token,
-)
+api, user = require_auth()
 
-st.session_state.api = api
+# st.code(user)
+
+if user and user.get("password_expiring_soon"):
+    dias = user.get("password_days_remaining")
+    if dias > 0:
+        st.warning(
+            f"""Sua senha expira em {dias} dias.
+                Recomendamos alterar antecipadamente.
+            """,
+            icon="⚠️",
+        )
 
 
 init_page(page_title="Home • Painel", page_icon=":house:", wide=True)
 st.title("📊 Painel Evolutivo de Dados")
 
-df = carregar_registros(api)
+df = carregar_registros()
 
 # --- ler query params ---
 query_params = st.query_params
@@ -35,8 +40,6 @@ categorias = df["categoria"].unique()
 
 # --- sidebar ---
 with st.sidebar:
-    user = st.session_state.get("user")
-
     try:
         cat_idx = categorias.tolist().index(st.session_state.categoria)
     except ValueError:
@@ -57,7 +60,7 @@ with st.sidebar:
         if st.button("🚪 Logout"):
             st.session_state.clear()
             api.logout()
-            st.switch_page("pages/0_🔐_Login.py")
+            st.switch_page(Page.LOGIN.path)
 
     if st.button("Recarregar dados"):
         st.cache_data.clear()

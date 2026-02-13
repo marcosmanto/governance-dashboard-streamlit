@@ -33,7 +33,13 @@ def listar_usuarios(user=Depends(get_current_user)):
 
 @router.get("/users/{username}/check")
 def check_user(username: str, user=Depends(get_current_user)):
-    return
+    return {
+        "username": user.username,
+        "role": user.role,
+        "must_change_password": bool(user.must_change_password),
+        "password_expiring_soon": bool(user.password_expiring_soon),
+        "password_days_remaining": int(user.password_days_remaining),
+    }
 
 
 @router.post("/users/{username}/reset-password")

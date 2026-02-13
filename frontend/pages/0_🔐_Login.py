@@ -3,7 +3,9 @@ import time
 import requests
 import streamlit as st
 
+from backend.core.config import settings
 from frontend.app_config import init_page
+from frontend.core.pages import Page
 from frontend.services.api import APIClient
 
 user = st.session_state.get("user")
@@ -22,10 +24,9 @@ if user:
     st.switch_page("Home.py")
     st.stop()
 
-API_BASE = "http://localhost:8000"
 
 api = APIClient(
-    base_url=API_BASE,
+    base_url=settings.API_BASE_URL,
     access_token=st.session_state.get("access_token"),
     refresh_token=st.session_state.get("refresh_token"),
 )
@@ -84,7 +85,7 @@ def forgot_password_dialog(prefill_username: str | None = None):
         with st.spinner("Enviando solicitação..."):
             try:
                 requests.post(
-                    f"{API_BASE}/forgot-password",
+                    f"{settings.API_BASE_URL}/forgot-password",
                     json={"username": username.strip()},
                     timeout=10,
                 )
@@ -97,7 +98,7 @@ def forgot_password_dialog(prefill_username: str | None = None):
 
     st.divider()
     if st.button("Já tenho um token"):
-        st.switch_page("pages/8_🔑_Redefinir_Senha.py")
+        st.switch_page(Page.RESET_PASSWORD.path)
 
 
 with st.container(
@@ -138,6 +139,16 @@ with st.container(
                     with st.spinner("Entrando..."):
                         resp = api.login(st.session_state.get("login_username", ""), password)
 
+                    if resp.status_code == 403:
+                        try:
+                            detail = resp.json().get("detail")
+                        except Exception:
+                            detail = None
+
+                        if detail in ("PASSWORD_CHANGE_REQUIRED", "PASSWORD_EXPIRED"):
+                            st.session_state.login_error_message = detail
+                            raise ValueError(detail)
+
                     if resp.status_code != 200:
                         st.session_state.login_error_message = "Usuário ou senha inválidos"
                         # Não interrompe o app para manter o botão "Esqueci minha senha"
@@ -151,7 +162,7 @@ with st.container(
 
                     # inicializa API client
                     st.session_state.api = APIClient(
-                        base_url=API_BASE,
+                        base_url=settings.API_BASE_URL,
                         access_token=data["access_token"],
                         refresh_token=data["refresh_token"],
                     )
@@ -161,7 +172,8 @@ with st.container(
                     if data.get("must_change_password"):
                         st.session_state.force_password_change = True
                         st.session_state.login_in_progress = False
-                        st.switch_page("pages/7_🔑_Troca_de_Senha.py")
+                        print(Page.CHANGE_PASSWORD.path)
+                        st.switch_page(Page.CHANGE_PASSWORD.path)
                         st.stop()
 
                     st.session_state.force_password_change = False
@@ -170,15 +182,15 @@ with st.container(
                     st.switch_page("Home.py")
 
                 except Exception as e:
-                    if str(e) == "LOGIN_INVALID":
+                    if str(e) == "LOGIN_INVALID" or str(e) == detail:
                         # erro já exibido acima
                         pass
                     else:
                         st.login_error_message = f"Erro ao conectar à API: {e}"
                         # st.error(f"Erro ao conectar à API: {e}")
-                finally:
-                    st.session_state.login_in_progress = False
-                    st.rerun()
+
+                st.session_state.login_in_progress = False
+                st.rerun()
 
 
 st.divider()

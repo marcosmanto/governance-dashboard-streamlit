@@ -1,19 +1,21 @@
 import pandas as pd
 import streamlit as st
+from fastapi import Response
 
-# from frontend.services.api import listar_registros
+from backend.core.config import settings
+from frontend.services.api import APIClient
 
 
 @st.cache_data
-def carregar_registros(_api):
+def carregar_registros():
     """
     _api começa com underscore:
     - NÃO entra no hash do cache
     - mas continua sendo usado
     """
-    resp = _api.listar_registros()
+    resp: Response = APIClient.listar_registros_publico(settings.API_BASE_URL)
 
-    if not resp.ok:
+    if resp.status_code != 200:
         raise RuntimeError(f"Erro ao carregar registros: {resp.status_code} - {resp.text}")
 
     dados = resp.json()

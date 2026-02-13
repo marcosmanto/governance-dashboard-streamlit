@@ -1,19 +1,21 @@
 import streamlit as st
 
 from frontend.app_config import init_page
+from frontend.core.pages import Page
+from frontend.services.navigation import set_current_page
+from frontend.services.session import require_auth
+
+set_current_page(Page.ADMIN)
+
+api, user = require_auth()
 
 init_page(page_title="Administração", page_icon=":material/handyman:", wide=True)
 
 st.session_state.login_error_message = None
-user = st.session_state.get("user")
-api = st.session_state.get("api")
 
-if user is None or api is None:
-    st.switch_page("pages/0_🔐_Login.py")
-    st.stop()
-
-with st.spinner("Verificando usuário..."):
-    resp = api._request("GET", f"/admin/users/{user['username']}/check")
+# =====================
+# 🔐 Segurança
+# =====================
 
 if user["role"] != "admin":
     st.warning("Acesso restrito a administradores.")

@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     JWT_SECRET: str
     JWT_ALGORITHM: str = "HS256"
 
+    API_BASE_URL: str = "http://localhost:8000"
+
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
@@ -20,6 +22,7 @@ class Settings(BaseSettings):
 
     # User Password Managment
     PASSWORD_VALIDITY_DAYS: int = 30
+    PASSWORD_EXPIRATION_WARNING_DAYS: int = 7
 
     class Config:
         env_file = ".env"

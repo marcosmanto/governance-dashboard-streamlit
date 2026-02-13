@@ -33,8 +33,8 @@ from backend.db import connect
 from backend.db.errors import DuplicateKeyError
 from backend.models import AuditoriaOut, RegistroIn, RegistroOut, User, UserLoginOut
 from backend.users.admin import router as admin_router
-from backend.users.users import router as users_router
 from backend.users.service import authenticate_user
+from backend.users.users import router as users_router
 
 app = FastAPI(title="Governance Dashboard API")
 
@@ -46,7 +46,7 @@ app.include_router(users_router)
 
 
 @app.get("/registros", response_model=List[RegistroOut])
-def get_registros(user: User = Depends(get_current_user)):
+def get_registros():  # user: User = Depends(get_current_user)):
     return listar_registros()
 
 
@@ -129,11 +129,6 @@ def delete_registro(
         method=request.method,
     )
     return {"message": "Registro excluído com sucesso"}
-
-
-@app.get("/me")
-def get_me(user: User = Depends(get_current_user)):
-    return user
 
 
 @app.get("/auditoria", response_model=List[AuditoriaOut])

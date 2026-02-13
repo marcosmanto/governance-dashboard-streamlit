@@ -4,26 +4,23 @@ import requests
 import streamlit as st
 
 from frontend.app_config import init_page
+from frontend.core.pages import Page
 from frontend.loaders.registros import carregar_registros
 from frontend.services.errors import handle_api_error
+from frontend.services.navigation import set_current_page
+from frontend.services.session import require_auth
+
+set_current_page(Page.GERENCIAR)
+
+api, user = require_auth()
 
 init_page(page_title="Gerenciar registros", page_icon=":pencil:")
 
 st.session_state.login_error_message = None
-user = st.session_state.get("user")
-api = st.session_state.get("api")
 
-if user is None:
-    st.switch_page("pages/0_🔐_Login.py")
-    st.stop()
-
-with st.spinner("Verificando usuário..."):
-    resp = api._request("GET", f"/admin/users/{user['username']}/check")
-
-if api is None:
-    st.switch_page("pages/0_🔐_Login.py")
-    st.stop()
-
+# =====================
+# 🔐 Segurança
+# =====================
 
 role = user["role"]
 
@@ -33,7 +30,7 @@ if role not in ("editor", "admin"):
 
 st.title("✏️ Gerenciar registros")
 
-df = carregar_registros(api)
+df = carregar_registros()
 
 # ======================
 # ➕ INSERIR

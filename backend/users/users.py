@@ -1,11 +1,13 @@
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from backend.audit.service import registrar_evento
+from backend.auth.dependencies import get_current_user
 from backend.auth.service import revoke_all_sessions
 from backend.core.config import settings
 from backend.db import connect, query
+from backend.models import UserContext
 from backend.users.models import ForgotPasswordIn, ResetPasswordIn
 from backend.users.password_reset_service import (
     gerar_token_reset_senha,
@@ -131,3 +133,14 @@ def reset_password(payload: ResetPasswordIn):
             status_code=500,
             detail="Erro interno ao redefinir a senha",
         )
+
+
+@router.get("/me")
+def get_me(user: UserContext = Depends(get_current_user)):
+    return {
+        "username": user.username,
+        "role": user.role,
+        "must_change_password": user.must_change_password,
+        "password_expiring_soon": user.password_expiring_soon,
+        "password_days_remaining": user.password_days_remaining,
+    }

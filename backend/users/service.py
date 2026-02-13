@@ -19,7 +19,7 @@ def authenticate_user(username: str, password: str):
         rows = query(
             conn,
             """
-            SELECT username, password_hash, role, is_active, must_change_password
+            SELECT username, password_hash, role, is_active, must_change_password, password_expires_at
               FROM users
              WHERE username = :username
             """,
@@ -39,10 +39,25 @@ def authenticate_user(username: str, password: str):
     if not verify_password(password, user["password_hash"]):
         return None
 
+    expiring_soon = False
+    days_remaining = None
+
+    password_expires_at = user["password_expires_at"]
+    if password_expires_at:
+        password_expires_datetime = datetime.fromisoformat(password_expires_at)
+        time_until_expiration = password_expires_datetime - datetime.now(timezone.utc)
+
+        days_remaining = time_until_expiration.days
+
+        if days_remaining <= settings.PASSWORD_EXPIRATION_WARNING_DAYS:
+            expiring_soon = True
+
     return {
         "username": user["username"],
         "role": user["role"],
         "must_change_password": bool(user["must_change_password"]),
+        "password_expiring_soon": expiring_soon,
+        "password_days_remaining": days_remaining,
     }
 
 
