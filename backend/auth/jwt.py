@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+from jose import ExpiredSignatureError, JWTError, jwt
 
 from backend.core.config import settings
 
@@ -17,6 +17,12 @@ def create_token(payload: dict, expires_delta: timedelta):
 
 def decode_token(token: str = Depends(oauth2_scheme)) -> dict:
     try:
-        return jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+        return jwt.decode(
+            token,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+    except ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="TOKEN_EXPIRED")
     except JWTError:
-        raise HTTPException(status_code=401, detail="Token inválido")
+        raise HTTPException(status_code=401, detail="TOKEN_INVALID")

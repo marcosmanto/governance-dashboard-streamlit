@@ -1,11 +1,14 @@
+import logging
 import uuid
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
 
 from backend.auth.jwt import create_token
-from backend.core.config import ACCESS_TOKEN_EXPIRE, REFRESH_TOKEN_EXPIRE
+from backend.core.config import ACCESS_TOKEN_EXPIRE, REFRESH_TOKEN_EXPIRE, settings
 from backend.db import connect, execute, query
+
+logger = logging.getLogger("auth-debug")  # uvicorn.error
 
 
 def login_user(username: str, role: str):
@@ -67,7 +70,12 @@ def login_user(username: str, role: str):
     )
 
     refresh_token = create_token(
-        {"sub": username, "sid": session_id, "type": "refresh"},
+        {
+            "sub": username,
+            "sid": session_id,
+            "type": "refresh",
+            "pwd": password_changed_at,
+        },
         REFRESH_TOKEN_EXPIRE,
     )
 
@@ -91,7 +99,7 @@ def logout_session(session_id: str):
         conn.close()
 
 
-def issue_new_access_token(payload: dict) -> str:
+def issue_new_access_token(payload: dict) -> dict:
     session_id = payload.get("sid")
     username = payload.get("sub")
     pwd_token = payload.get("pwd")
@@ -101,7 +109,9 @@ def issue_new_access_token(payload: dict) -> str:
 
     conn = connect()
     try:
-        # 1️⃣ Validar sessão
+        now = datetime.now(timezone.utc)
+
+        # 1️⃣ Validar sessão atual
         session_rows = query(
             conn,
             """
@@ -119,6 +129,10 @@ def issue_new_access_token(payload: dict) -> str:
 
         if session["revoked"]:
             raise HTTPException(status_code=401)
+
+        # expires_at = datetime.fromisoformat(session["expires_at"])
+        # if expires_at < now:
+        #     raise HTTPException(status_code=401)
 
         # 2️⃣ Buscar versão atual da senha
         user_rows = query(
@@ -139,21 +153,73 @@ def issue_new_access_token(payload: dict) -> str:
         # 3️⃣ Comparar versões
         if pwd_token != pwd_db:
             raise HTTPException(status_code=401, detail="PASSWORD_CHANGE")
+
+        # 🔁 4️⃣ ROTACIONAR SESSÃO
+        # 4.1 Revogar sessão atual
+        execute(
+            conn,
+            """
+            UPDATE user_sessions
+               SET revoked = 1
+             WHERE id = :id
+            """,
+            {"id": session_id},
+        )
+
+        # 4.2 Criar nova sessão
+        new_session_id = str(uuid.uuid4())
+        new_expires_at = now + REFRESH_TOKEN_EXPIRE
+        execute(
+            conn,
+            """
+            INSERT INTO user_sessions
+                (id, username, role, created_at, expires_at, revoked)
+            VALUES
+                (:id, :username, :role, :created_at, :expires_at, 0)
+            """,
+            {
+                "id": new_session_id,
+                "username": username,
+                "role": session["role"],
+                "created_at": now.isoformat(),
+                "expires_at": new_expires_at.isoformat(),
+            },
+        )
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        # ⚠️ Apenas em desenvolvimento, retorna o token no response
+        if settings.ENV == "dev":
+            logger.warning(f"Erro ao tentar REFRESH da sessão do usuário: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao tentar REFRESH da sessão do usuário")
     finally:
         conn.close()
 
-    # 4️⃣ Emitir novo access token
-    access_token = create_token(
+    # 🔐 5️⃣ Emitir NOVOS tokens com novo sid
+    new_access_token = create_token(
         {
             "sub": username,
             "role": session["role"],
-            "sid": session_id,
+            "sid": new_session_id,
             "pwd": pwd_db,  # 🔑 sempre a versão atual
         },
         ACCESS_TOKEN_EXPIRE,
     )
 
-    return access_token
+    new_refresh_token = create_token(
+        {
+            "sub": username,
+            "sid": new_session_id,
+            "type": "refresh",
+            "pwd": pwd_db,  # 🔐 importante para manter coerência
+        },
+        REFRESH_TOKEN_EXPIRE,
+    )
+
+    return {
+        "access_token": new_access_token,
+        "refresh_token": new_refresh_token,
+    }
 
 
 def revoke_all_sessions(username: str, conn=None):

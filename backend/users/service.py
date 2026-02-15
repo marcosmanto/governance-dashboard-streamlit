@@ -125,19 +125,22 @@ def resetar_senha_admin(username: str, admin_user: UserContext):
             },
         )
 
+        revoke_all_sessions(username, conn=conn)
+
         # 🧾 Auditoria (MESMA conexão)
         registrar_evento(
             conn=conn,
             username=admin_user.username,
             role=admin_user.role,
-            action="RESET_PASSWORD",
-            resource="users",
+            action="RESET_PASSWORD_ADMIN",
+            resource="users/admin",
             resource_id=None,
             payload_before={"username": username},
             payload_after=None,
             endpoint="/admin/users/reset-password",
             method="POST",
         )
+
         conn.commit()
         return nova_senha
     except Exception as exc:

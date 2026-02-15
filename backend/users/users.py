@@ -17,7 +17,7 @@ from backend.users.password_reset_service import (
 from backend.users.service import resetar_senha_por_token
 
 router = APIRouter(tags=["Users"])
-logger = logging.getLogger("uvicorn.error")
+logger = logging.getLogger("auth-debug")
 
 
 @router.post("/forgot-password")
@@ -112,7 +112,7 @@ def reset_password(payload: ResetPasswordIn):
         registrar_evento(
             username=username,
             role="system",
-            action="RESET_PASSWORD",
+            action="RESET_PASSWORD_TOKEN",
             resource="users",
             resource_id=None,
             payload_before=None,

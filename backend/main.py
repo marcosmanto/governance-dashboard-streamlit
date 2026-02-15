@@ -1,3 +1,4 @@
+import logging
 from datetime import date
 from typing import List
 
@@ -18,6 +19,8 @@ from backend.auth.service import (
     revoke_all_sessions,
     revoke_session_by_id,
 )
+from backend.core.config import settings
+from backend.core.exceptions import register_exception_handlers
 from backend.crud import (
     # atualizar_registro,
     atualizar_registro_com_auditoria,
@@ -37,6 +40,17 @@ from backend.users.service import authenticate_user
 from backend.users.users import router as users_router
 
 app = FastAPI(title="Governance Dashboard API")
+
+logger = logging.getLogger("auth-debug")
+logger.setLevel(logging.DEBUG)
+
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    logger.addHandler(handler)
+
+if settings.ENV == "dev":
+    register_exception_handlers(app, logger)
 
 app.add_middleware(AuditMiddleware)
 # 🔐 Rotas administrativas
@@ -190,9 +204,12 @@ def login(username: str, password: str):
 def refresh_token(payload: dict = Depends(decode_token)):
     if payload.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="Token inválido")
-
-    access_token = issue_new_access_token(payload)
-    return {"access_token": access_token}
+    try:
+        usertokens = issue_new_access_token(payload)
+        return usertokens
+    except Exception:
+        # detail=str(e) => Nunca exponha str(e). Pode acabar expondo: Erros internos, mensagens de banco, Stack trace parcial
+        raise HTTPException(status_code=401, detail="REFRESH_FAILED")
 
 
 @app.post("/admin/users/{username}/sessions/revoke")

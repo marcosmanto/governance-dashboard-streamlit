@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 
+from backend.auth.service import revoke_all_sessions
 from backend.db import connect, execute, query
 
 
@@ -46,6 +47,9 @@ def gerar_token_reset_senha(*, username: str, validade_minutos: int = 30) -> str
                 "expires_at": expires_at.isoformat(),
             },
         )
+
+        revoke_all_sessions(username, conn=conn)
+
         conn.commit()
     finally:
         conn.close()

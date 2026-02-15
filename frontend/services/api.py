@@ -73,10 +73,14 @@ class APIClient:
             return False
 
         data = resp.json()
+
         self.access_token = data["access_token"]
+        self.refresh_token = data["refresh_token"]
 
         # sincroniza com o session_state
         st.session_state.access_token = self.access_token
+        st.session_state.refresh_token = self.refresh_token
+
         return True
 
     def _request(self, method: str, path: str, **kwargs):
