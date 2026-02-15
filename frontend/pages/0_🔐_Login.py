@@ -132,6 +132,7 @@ with st.container(
                 errors.append("Informe a senha.")
 
             if errors:
+                st.session_state.login_in_progress = False
                 for msg in errors:
                     st.error(msg)
             else:

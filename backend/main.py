@@ -3,6 +3,8 @@ from datetime import date
 from typing import List
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from backend.audit.middleware import AuditMiddleware
 from backend.audit.service import registrar_evento
@@ -20,7 +22,7 @@ from backend.auth.service import (
     revoke_session_by_id,
 )
 from backend.core.config import settings
-from backend.core.exceptions import register_exception_handlers
+from backend.core.exceptions import register_exception_handlers, register_rate_limit_exception
 from backend.crud import (
     # atualizar_registro,
     atualizar_registro_com_auditoria,
@@ -41,6 +43,9 @@ from backend.users.users import router as users_router
 
 app = FastAPI(title="Governance Dashboard API")
 
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
 logger = logging.getLogger("auth-debug")
 logger.setLevel(logging.DEBUG)
 
@@ -51,6 +56,8 @@ if not logger.handlers:
 
 if settings.ENV == "dev":
     register_exception_handlers(app, logger)
+
+register_rate_limit_exception(app)
 
 app.add_middleware(AuditMiddleware)
 # 🔐 Rotas administrativas
@@ -172,8 +179,16 @@ def logout(user=Depends(get_current_user)):
     return {"message": "Logout realizado com sucesso"}
 
 
+@app.post("/logout_all")
+def logout_all(user=Depends(get_current_user)):
+    # logout global (tipo “sair de todos dispositivos”):
+    revoke_all_sessions(user.username)
+    return {"message": "Todas as sessões foram encerradas"}
+
+
 @app.post("/login", response_model=UserLoginOut)
-def login(username: str, password: str):
+@limiter.limit("5/minute")
+def login(request: Request, username: str, password: str):
     user = authenticate_user(username, password)
     if not user:
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
@@ -201,12 +216,18 @@ def login(username: str, password: str):
 
 
 @app.post("/refresh")
-def refresh_token(payload: dict = Depends(decode_token)):
+@limiter.limit("5/minute")
+def refresh_token(
+    request: Request,
+    payload: dict = Depends(decode_token),
+):
     if payload.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="Token inválido")
     try:
         usertokens = issue_new_access_token(payload)
         return usertokens
+    except HTTPException:
+        raise  # Re-raise the HTTPException directly
     except Exception:
         # detail=str(e) => Nunca exponha str(e). Pode acabar expondo: Erros internos, mensagens de banco, Stack trace parcial
         raise HTTPException(status_code=401, detail="REFRESH_FAILED")

@@ -7,3 +7,4 @@ python-jose[cryptography]
 pydantic-settings
 passlib[bcrypt]
 bcrypt<4
+slowapi

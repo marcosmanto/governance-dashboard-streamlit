@@ -53,7 +53,11 @@ with st.sidebar:
 
     st.divider()
 
-    st.success(st.session_state.get("access_token"))
+    st.write("Access token")
+    st.code(st.session_state.get("access_token"))
+
+    st.write("Refresh token")
+    st.code(st.session_state.get("refresh_token"))
 
     if user:
         st.markdown(f"👤 **{user['username']}** ({user['role']})")
