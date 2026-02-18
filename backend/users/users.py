@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from backend.audit.service import registrar_evento
 from backend.auth.dependencies import get_current_user
@@ -8,10 +8,14 @@ from backend.auth.service import revoke_all_sessions
 from backend.core.config import settings
 from backend.db import connect, query
 from backend.models import UserContext
+from backend.notifications.email_service import send_email
+from backend.notifications.templates import reset_password_template
 from backend.users.models import ForgotPasswordIn, ResetPasswordIn
 from backend.users.password_reset_service import (
+    assinar_token_reset,
     gerar_token_reset_senha,
     marcar_token_como_usado,
+    validar_assinatura_token,
     validar_token_reset_senha,
 )
 from backend.users.service import resetar_senha_por_token
@@ -21,7 +25,7 @@ logger = logging.getLogger("auth-debug")
 
 
 @router.post("/forgot-password")
-def forgot_password(payload: ForgotPasswordIn):
+def forgot_password(payload: ForgotPasswordIn, background_tasks: BackgroundTasks):
     """
     Gera token de reset de senha.
     Em produção, o token deve ser enviado por e-mail.
@@ -37,7 +41,7 @@ def forgot_password(payload: ForgotPasswordIn):
             rows = query(
                 conn,
                 """
-                SELECT 1
+                SELECT email
                   FROM users
                  WHERE username = :username
                    AND is_active = 1
@@ -48,9 +52,31 @@ def forgot_password(payload: ForgotPasswordIn):
             conn.close()
 
         token = None
+
         if rows:
             logger.info("Usuário ativo encontrado para reset de senha")
+
+            email = rows[0]["email"]
+
+            # 1️⃣ Gerar token puro
             token = gerar_token_reset_senha(username=username)
+
+            # 2️⃣ Assinar token
+            signed_token = assinar_token_reset(token)
+
+            # 3️⃣ Criar link
+            reset_link = f"{settings.FRONTEND_URL}?token={signed_token}"
+
+            # 4️⃣ Criar HTML
+            html_content = reset_password_template(reset_link)
+
+            # 5️⃣ Enviar e-mail em background
+            background_tasks.add_task(
+                send_email,
+                email,
+                "Redefinição de senha",
+                html_content,
+            )
         else:
             logger.info("Usuário não encontrado ou inativo para reset de senha")
 
@@ -96,19 +122,23 @@ def reset_password(payload: ResetPasswordIn):
     """
     try:
         logger.info("Reset-password solicitado")
-        # 1) valida token
-        username = validar_token_reset_senha(token=payload.token)
 
-        # 2) altera senha (aplica política)
+        # 1️⃣ Validar assinatura primeiro
+        token_puro = validar_assinatura_token(payload.token)
+
+        # 2️⃣ Validar token no banco
+        username = validar_token_reset_senha(token=token_puro)
+
+        # 3️⃣ Alterar senha (aplica política)
         resetar_senha_por_token(username=username, nova_senha=payload.new_password)
 
-        # 3) marca token como usado
-        marcar_token_como_usado(token=payload.token)
+        # 4️⃣ Marcar token como usado
+        marcar_token_como_usado(token=token_puro)
 
-        # 4) revoga sessões do usuário
+        # 5️⃣ Revoga sessões do usuário
         revoke_all_sessions(username)
 
-        # 5) auditoria
+        # 6️⃣ Auditoria
         registrar_evento(
             username=username,
             role="system",

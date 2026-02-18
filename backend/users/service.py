@@ -234,7 +234,7 @@ def resetar_senha_por_token(*, username: str, nova_senha: str):
             """
             UPDATE users
                SET password_hash = :password_hash,
-                   must_change_password = 0
+                   must_change_password = 0,
                    password_changed_at = :changed_at,
                    password_expires_at = :expires_at
              WHERE username = :username

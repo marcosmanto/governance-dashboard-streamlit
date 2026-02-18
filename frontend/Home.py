@@ -4,9 +4,19 @@ from charts.charts import grafico_evolucao
 from frontend.app_config import init_page
 from frontend.core.pages import Page
 from frontend.loaders.registros import carregar_registros
+from frontend.services.navigation import set_current_page
 from frontend.services.session import require_auth
 
-st.session_state["_page"] = "home"
+# 🔐 Interceptar reset token antes de exigir autenticação
+token = st.query_params.get("token", None)
+
+if token:
+    st.session_state.reset_token_from_link = token
+    st.switch_page(Page.RESET_PASSWORD.path)
+    st.stop()
+
+
+set_current_page(Page.HOME)
 
 api, user = require_auth()
 

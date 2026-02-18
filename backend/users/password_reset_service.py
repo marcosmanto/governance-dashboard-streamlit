@@ -1,10 +1,12 @@
 import hashlib
+import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 
 from backend.auth.service import revoke_all_sessions
+from backend.core.config import settings
 from backend.db import connect, execute, query
 
 
@@ -95,6 +97,43 @@ def validar_token_reset_senha(*, token: str) -> str:
         return row["username"]
     finally:
         conn.close()
+
+
+def assinar_token_reset(token: str) -> str:
+    """
+    Assina o token com HMAC usando JWT_SECRET.
+    Retorna token + assinatura concatenados.
+    """
+    signature = hmac.new(
+        settings.JWT_SECRET.encode(),
+        token.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+    return f"{token}.{signature}"
+
+
+def validar_assinatura_token(token_assinado: str) -> str:
+    """
+    Separa token e assinatura.
+    Valida integridade.
+    Retorna token puro se válido.
+    """
+    try:
+        token, signature = token_assinado.split(".")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Token inválido")
+
+    expected_signature = hmac.new(
+        settings.JWT_SECRET.encode(),
+        token.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(signature, expected_signature):
+        raise HTTPException(status_code=400, detail="Token inválido")
+
+    return token
 
 
 def marcar_token_como_usado(*, token: str):

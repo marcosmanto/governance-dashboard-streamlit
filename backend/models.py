@@ -9,6 +9,7 @@ Role = Literal["reader", "editor", "admin"]
 class User(BaseModel):
     username: str
     role: Role
+    email: str | None
 
 
 class RegistroIn(BaseModel):
