@@ -4,7 +4,7 @@ from backend.audit.service import registrar_evento
 from backend.auth.dependencies import get_current_user, get_current_user_allow_password_change
 from backend.auth.permissions import require_role
 from backend.auth.service import login_user
-from backend.db import connect, query
+from backend.db import connect, execute, query
 from backend.users.password_reset_service import limpar_tokens_reset_expirados_ou_usados
 from backend.users.schemas import ChangePasswordIn
 from backend.users.service import alterar_senha, resetar_senha_admin
@@ -112,3 +112,51 @@ def change_password(
             status_code=500,
             detail="Erro interno ao alterar senha",
         )
+
+
+@router.put("/users/{username}/email")
+def update_user_email(
+    username: str,
+    payload: dict,
+    admin=Depends(get_current_user),
+):
+    require_role("admin")(admin)
+
+    new_email = payload.get("email")
+    if not new_email:
+        raise HTTPException(status_code=400, detail="Email obrigatório")
+
+    conn = connect()
+    try:
+        # valida se já existe
+        existing_user = query(
+            conn,
+            """
+            SELECT 1
+              FROM users
+             WHERE username != :username
+               AND email = :email
+            """,
+            {"username": username, "email": new_email},
+        )
+        if existing_user:
+            raise HTTPException(status_code=400, detail="EMAIL_ALREADY_IN_USE")
+
+        execute(
+            conn,
+            """
+            UPDATE users
+               SET email = :email
+             WHERE username = :username
+            """,
+            {"username": username, "email": new_email},
+        )
+
+        conn.commit()
+
+        return {"message": "Email atualizado com sucesso"}
+    except Exception as exc:
+        conn.rollback()
+        raise exc
+    finally:
+        conn.close()

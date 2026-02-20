@@ -1,0 +1,3 @@
+ALTER TABLE users ADD COLUMN name TEXT;
+ALTER TABLE users ADD COLUMN fullname TEXT;
+ALTER TABLE users ADD COLUMN avatar_path TEXT;

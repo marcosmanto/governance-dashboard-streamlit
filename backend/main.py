@@ -36,7 +36,7 @@ from backend.crud import (
 from backend.crud_auditoria import listar_auditoria
 from backend.db import connect
 from backend.db.errors import DuplicateKeyError
-from backend.models import AuditoriaOut, RegistroIn, RegistroOut, User, UserLoginOut
+from backend.models import AuditoriaOut, RegistroIn, RegistroOut, User, UserContext, UserLoginOut
 from backend.users.admin import router as admin_router
 from backend.users.service import authenticate_user
 from backend.users.users import router as users_router
@@ -74,7 +74,7 @@ def get_registros():  # user: User = Depends(get_current_user)):
 @app.post("/registros", status_code=201)
 def post_registro(
     registro: RegistroIn,
-    user: User = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ):
     require_role("editor", "admin")(user)
     try:
@@ -89,7 +89,7 @@ def post_registro(
 @app.get("/registros/{id_}", response_model=RegistroOut)
 def get_registro(
     id_: int,
-    user: User = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ):
     registro = obter_registro_por_id(id_)
     if not registro:
@@ -102,7 +102,7 @@ def put_registro(
     id_: int,
     registro: RegistroIn,
     request: Request,
-    user: User = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ):
     require_role("editor", "admin")(user)
 
@@ -130,7 +130,7 @@ def put_registro(
 def delete_registro(
     id_: int,
     request: Request,
-    user: User = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ):
     require_role("admin")(user)
 
@@ -159,7 +159,7 @@ def get_auditoria(
     resource: str | None = None,
     data_inicio: date | None = None,
     data_fim: date | None = None,
-    user: User = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ):
     # 🔐 só admin pode consultar auditoria
     require_role("admin")(user)
@@ -174,13 +174,13 @@ def get_auditoria(
 
 
 @app.post("/logout")
-def logout(user=Depends(get_current_user)):
+def logout(user: UserContext = Depends(get_current_user)):
     logout_session(user.session_id)
     return {"message": "Logout realizado com sucesso"}
 
 
 @app.post("/logout_all")
-def logout_all(user=Depends(get_current_user)):
+def logout_all(user: UserContext = Depends(get_current_user)):
     # logout global (tipo “sair de todos dispositivos”):
     revoke_all_sessions(user.username)
     return {"message": "Todas as sessões foram encerradas"}
@@ -234,7 +234,7 @@ def refresh_token(
 
 
 @app.post("/admin/users/{username}/sessions/revoke")
-def revoke_user_sessions(username: str, user: User = Depends(get_current_user)):
+def revoke_user_sessions(username: str, user: UserContext = Depends(get_current_user)):
     require_role("admin")(user)
     revoke_all_sessions(username)
     return {"message": f"Sessões de {username} revogadas com sucesso"}
@@ -243,7 +243,7 @@ def revoke_user_sessions(username: str, user: User = Depends(get_current_user)):
 @app.post("/admin/sessions/{session_id}/revoke")
 def revoke_single_session(
     session_id: str,
-    user=Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ):
     require_role("admin")(user)
     revoke_session_by_id(session_id)
@@ -251,7 +251,7 @@ def revoke_single_session(
 
 
 @app.post("/admin/sessions/cleanup")
-def cleanup_sessions(user=Depends(get_current_user)):
+def cleanup_sessions(user: UserContext = Depends(get_current_user)):
     require_role("admin")(user)
     count = cleanup_expired_sessions()
     return {
@@ -261,7 +261,7 @@ def cleanup_sessions(user=Depends(get_current_user)):
 
 
 @app.post("/admin/sessions/revoked/cleanup")
-def cleanup_sessions_revoked(user=Depends(get_current_user)):
+def cleanup_sessions_revoked(user: UserContext = Depends(get_current_user)):
     require_role("admin")(user)
     count = cleanup_revoked_sessions()
     return {
@@ -271,7 +271,7 @@ def cleanup_sessions_revoked(user=Depends(get_current_user)):
 
 
 @app.get("/admin/audit/verify")
-def verify_audit_chain(user=Depends(get_current_user)):
+def verify_audit_chain(user: UserContext = Depends(get_current_user)):
     require_role("admin")(user)
     conn = connect()
     try:

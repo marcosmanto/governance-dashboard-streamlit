@@ -3,11 +3,11 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from backend.audit.service import registrar_evento
-from backend.auth.dependencies import get_current_user
+from backend.auth.dependencies import get_current_user, get_current_user_profile
 from backend.auth.service import revoke_all_sessions
 from backend.core.config import settings
 from backend.db import connect, query
-from backend.models import UserContext
+from backend.models import User, UserContext
 from backend.notifications.email_service import send_email
 from backend.notifications.templates import reset_password_template
 from backend.users.models import ForgotPasswordIn, ResetPasswordIn
@@ -22,6 +22,14 @@ from backend.users.service import resetar_senha_por_token
 
 router = APIRouter(tags=["Users"])
 logger = logging.getLogger("auth-debug")
+
+
+def _send_email_safe(to: str, subject: str, html: str):
+    try:
+        send_email(to, subject, html)
+    except Exception as exc:
+        # Em dev, é comum o email falhar se for fake. Apenas logamos o aviso.
+        logger.warning(f"Falha ao enviar e-mail para {to}: {exc}")
 
 
 @router.post("/forgot-password")
@@ -52,6 +60,7 @@ def forgot_password(payload: ForgotPasswordIn, background_tasks: BackgroundTasks
             conn.close()
 
         token = None
+        signed_token = None
 
         if rows:
             logger.info("Usuário ativo encontrado para reset de senha")
@@ -71,12 +80,17 @@ def forgot_password(payload: ForgotPasswordIn, background_tasks: BackgroundTasks
             html_content = reset_password_template(reset_link)
 
             # 5️⃣ Enviar e-mail em background
-            background_tasks.add_task(
-                send_email,
-                email,
-                "Redefinição de senha",
-                html_content,
-            )
+            if email:
+                background_tasks.add_task(
+                    _send_email_safe,
+                    email,
+                    "Redefinição de senha",
+                    html_content,
+                )
+            else:
+                logger.warning(
+                    f"Usuário {username} solicitou reset mas não possui e-mail cadastrado."
+                )
         else:
             logger.info("Usuário não encontrado ou inativo para reset de senha")
 
@@ -98,9 +112,9 @@ def forgot_password(payload: ForgotPasswordIn, background_tasks: BackgroundTasks
         }
 
         # ⚠️ Apenas em desenvolvimento, retorna o token no response
-        if settings.ENV == "dev" and token:
-            response["reset_token"] = token
-            logger.warning(f"Token de reset: {token}")
+        if settings.ENV == "dev" and signed_token:
+            response["reset_token"] = signed_token
+            logger.warning(f"Token de reset: {signed_token}")
 
         return response
 
@@ -165,12 +179,6 @@ def reset_password(payload: ResetPasswordIn):
         )
 
 
-@router.get("/me")
-def get_me(user: UserContext = Depends(get_current_user)):
-    return {
-        "username": user.username,
-        "role": user.role,
-        "must_change_password": user.must_change_password,
-        "password_expiring_soon": user.password_expiring_soon,
-        "password_days_remaining": user.password_days_remaining,
-    }
+@router.get("/me", response_model=User)
+def get_me(user: User = Depends(get_current_user_profile)):
+    return user

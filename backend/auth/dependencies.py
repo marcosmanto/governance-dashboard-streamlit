@@ -6,7 +6,7 @@ from jose import ExpiredSignatureError, JWTError, jwt
 
 from backend.core.config import settings
 from backend.db import connect, query
-from backend.models import UserContext
+from backend.models import User, UserContext
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
@@ -92,6 +92,24 @@ def get_current_user(
 
     except JWTError:
         raise HTTPException(status_code=401, detail="Erro ao decodificar o token")
+
+
+def get_current_user_profile(
+    user_context: UserContext = Depends(get_current_user),
+) -> User:
+    conn = connect()
+    try:
+        user_data = query(
+            conn,
+            "SELECT username, role, email, name, fullname, avatar_path FROM users WHERE username = :username",
+            {"username": user_context.username},
+        )
+        if not user_data:
+            raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+        return User(**user_data[0])
+    finally:
+        conn.close()
 
 
 def get_current_user_allow_password_change(token: str = Depends(oauth2_scheme)):
