@@ -46,7 +46,7 @@ class APIClient:
         return True
 
     def _sync_user_from_headers(self, resp):
-        logger.info("Sincronizando usuário...")
+        logger.debug("Sincronizando dados de usuário...")
         header = resp.headers.get("X-User-Context")
 
         if not header:
