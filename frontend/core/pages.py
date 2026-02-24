@@ -11,6 +11,7 @@ class Page(Enum):
     USERS = ("users", "pages/6_🧑‍💼_Usuários.py")
     CHANGE_PASSWORD = ("change_password", "pages/7_🔑_Troca_de_Senha.py")
     RESET_PASSWORD = ("reset_password", "pages/8_🔑_Redefinir_Senha.py")
+    PROFILE = ("profile", "pages/9_👤_Perfil.py")
 
     def __init__(self, key, path):
         self.key = key
