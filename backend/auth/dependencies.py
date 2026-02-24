@@ -1,5 +1,7 @@
+import time
 from datetime import datetime, timezone
 
+from backend.core.logger import logger
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import ExpiredSignatureError, JWTError, jwt
@@ -9,6 +11,11 @@ from backend.db import connect, query
 from backend.models import User, UserContext
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+# Cache simples em memória para evitar ir ao banco em toda requisição
+# Formato: {session_id: (timestamp, [rows])}
+_session_cache = {}
+SESSION_CACHE_TTL = 30  # segundos
 
 
 def get_current_user(
@@ -24,25 +31,42 @@ def get_current_user(
         if not session_id or not username or not role:
             raise HTTPException(status_code=401, detail="Token inválido")
 
-        conn = connect()
+        # ⚡ Otimização: Cache de sessão
+        now = time.time()
+        cached = _session_cache.get(session_id)
+        rows = None
 
-        try:
-            rows = query(
-                conn,
-                """
-                SELECT
-                    s.revoked,
-                    s.expires_at,
-                    u.must_change_password,
-                    u.password_expires_at
-                  FROM user_sessions s
-                  JOIN users u ON u.username = s.username
-                 WHERE s.id = :id
-                """,
-                {"id": session_id},
-            )
-        finally:
-            conn.close()
+        if cached:
+            ts, data = cached
+            if now - ts < SESSION_CACHE_TTL:
+                rows = data
+                if settings.ENV == "dev":
+                    logger.info(f"Cache de sessão usado para {username}")
+
+        if rows is None:
+            conn = connect()
+            try:
+                db_rows = query(
+                    conn,
+                    """
+                    SELECT
+                        s.revoked,
+                        s.expires_at,
+                        u.must_change_password,
+                        u.password_expires_at
+                      FROM user_sessions s
+                      JOIN users u ON u.username = s.username
+                     WHERE s.id = :id
+                    """,
+                    {"id": session_id},
+                )
+                # Converte para dict para garantir que seja serializável/desacoplado do cursor
+                rows = [dict(r) for r in db_rows]
+            finally:
+                conn.close()
+
+            # Atualiza cache
+            _session_cache[session_id] = (now, rows)
 
         if not rows:
             raise HTTPException(status_code=401)

@@ -1,12 +1,14 @@
-import logging
+import shutil
+from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 
 from backend.audit.service import registrar_evento
 from backend.auth.dependencies import get_current_user, get_current_user_profile
 from backend.auth.service import revoke_all_sessions
 from backend.core.config import settings
-from backend.db import connect, query
+from backend.core.logger import logger
+from backend.db import connect, execute, query
 from backend.models import User, UserContext
 from backend.notifications.email_service import send_email
 from backend.notifications.templates import reset_password_template
@@ -18,10 +20,10 @@ from backend.users.password_reset_service import (
     validar_assinatura_token,
     validar_token_reset_senha,
 )
+from backend.users.schemas import UserProfileUpdate
 from backend.users.service import resetar_senha_por_token
 
 router = APIRouter(tags=["Users"])
-logger = logging.getLogger("auth-debug")
 
 
 def _send_email_safe(to: str, subject: str, html: str):
@@ -182,3 +184,116 @@ def reset_password(payload: ResetPasswordIn):
 @router.get("/me", response_model=User)
 def get_me(user: User = Depends(get_current_user_profile)):
     return user
+
+
+@router.put("/me/profile")
+def update_profile(
+    payload: UserProfileUpdate,
+    user: UserContext = Depends(get_current_user),
+):
+    conn = connect()
+    try:
+        # valida email único
+        exists = query(
+            conn,
+            "SELECT 1 FROM users WHERE email = :email AND username != :username",
+            {"email": payload.email, "username": user.username},
+        )
+        if exists:
+            raise HTTPException(status_code=400, detail="EMAIL_ALREADY_EXISTS")
+
+        execute(
+            conn,
+            """
+            UPDATE users
+            SET email = :email,
+                name = :name,
+                fullname = :fullname
+            WHERE username = :username
+            """,
+            {
+                "email": payload.email,
+                "name": payload.name,
+                "fullname": payload.fullname,
+                "username": user.username,
+            },
+        )
+
+        registrar_evento(
+            conn=conn,
+            username=user.username,
+            role=user.role,
+            action="UPDATE_PROFILE",
+            resource="users",
+            resource_id=None,
+            payload_before=None,
+            payload_after=payload.model_dump(),
+            endpoint="/me/profile",
+            method="PUT",
+        )
+        conn.commit()
+
+        return {"message": "Perfil atualizado"}
+    finally:
+        conn.close()
+
+
+@router.post("/me/avatar")
+def upload_avatar(
+    file: UploadFile = File(...),
+    user: UserContext = Depends(get_current_user),
+):
+    # 1. Validação de Tipo (MIME)
+    if file.content_type not in ["image/jpeg", "image/png"]:
+        raise HTTPException(status_code=400, detail="INVALID_FILE_TYPE")
+
+    # 2. Validação de Tamanho (2MB)
+    # Move o cursor para o final para ler o tamanho
+    file.file.seek(0, 2)
+    size = file.file.tell()
+    # Retorna o cursor para o início para poder salvar depois
+    file.file.seek(0)
+
+    if size > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="FILE_TOO_LARGE")
+
+    # 3. Preparar diretório e caminho
+    upload_dir = Path("backend/static/avatars")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    extension = ".png" if "png" in file.content_type else ".jpg"
+    filename = f"{user.username}{extension}"
+    file_path = upload_dir / filename
+
+    # 4. Salvar arquivo
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # Caminho relativo para salvar no banco (para o frontend acessar via StaticFiles)
+    db_path = f"/static/avatars/{filename}"
+
+    conn = connect()
+    try:
+        execute(
+            conn,
+            "UPDATE users SET avatar_path = :path WHERE username = :username",
+            {"path": db_path, "username": user.username},
+        )
+
+        registrar_evento(
+            conn=conn,
+            username=user.username,
+            role=user.role,
+            action="UPLOAD_AVATAR",
+            resource="users",
+            resource_id=None,
+            payload_before=None,
+            payload_after={"avatar_path": db_path},
+            endpoint="/me/avatar",
+            method="POST",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"message": "Avatar atualizado", "path": db_path}

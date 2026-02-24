@@ -1,14 +1,12 @@
-import logging
 import uuid
 from datetime import datetime, timezone
 
+from backend.core.logger import logger
 from fastapi import HTTPException
 
 from backend.auth.jwt import create_token
 from backend.core.config import ACCESS_TOKEN_EXPIRE, REFRESH_TOKEN_EXPIRE, settings
 from backend.db import connect, execute, query
-
-logger = logging.getLogger("auth-debug")  # uvicorn.error
 
 
 def login_user(username: str, role: str):

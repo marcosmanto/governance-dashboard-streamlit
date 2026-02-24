@@ -1,0 +1,13 @@
+# Bloqueio de credenciais e ambiente
+.env
+*.pem
+*.key
+
+# Bloqueio de dados e logs de processamento (Polars/Data Lake)
+**/data/*.parquet
+**/data/*.csv
+**/logs/
+
+# Bloqueio de arquivos de infraestrutura sensíveis
+docker-compose.override.yml
+nginx/conf.d/

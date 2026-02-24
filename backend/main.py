@@ -1,8 +1,10 @@
 import logging
+import os
 from datetime import date
 from typing import List
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -42,6 +44,11 @@ from backend.users.service import authenticate_user
 from backend.users.users import router as users_router
 
 app = FastAPI(title="Governance Dashboard API")
+
+# Garante que o diretório de arquivos estáticos exista antes de montar
+os.makedirs("backend/static", exist_ok=True)
+
+app.mount("/static", StaticFiles(directory="backend/static"), name="static")
 
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter

@@ -3,8 +3,10 @@ pandas
 plotly
 fastapi
 uvicorn
+python-multipart
 python-jose[cryptography]
 pydantic-settings
 passlib[bcrypt]
 bcrypt<4
 slowapi
+requests

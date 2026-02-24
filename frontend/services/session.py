@@ -24,10 +24,10 @@ def require_auth():
         st.switch_page(Page.LOGIN.path)
         st.stop()
 
-    # Otimização: Valida no backend apenas a cada 60 segundos
+    # Otimização: Valida no backend apenas a cada 5 minutos (300s)
     last_check = st.session_state.get("last_auth_check", 0)
     now = time.time()
-    cache_duration = 60  # segundos
+    cache_duration = 300  # 5 minutos
 
     if (now - last_check) > cache_duration:
         with st.spinner("Verificando sessão..."):  # Opcional: remover spinner para ser transparente
