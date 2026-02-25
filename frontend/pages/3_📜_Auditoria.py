@@ -1,19 +1,14 @@
 import pandas as pd
 import streamlit as st
 
-from frontend.app_config import init_page
 from frontend.core.pages import Page
+from frontend.layouts.base_layout import base_layout
 from frontend.services.errors import handle_api_error
 from frontend.services.navigation import set_current_page
-from frontend.services.session import require_auth
 
 set_current_page(Page.AUDITORIA)
 
-api, user = require_auth()
-
-init_page(page_title="Auditoria", page_icon="📜")
-
-st.session_state.login_error_message = None
+api, user = base_layout("Auditoria", "📜")
 
 # =====================
 # 🔐 Segurança

@@ -1,3 +1,5 @@
+import time
+
 import requests
 import streamlit as st
 
@@ -12,15 +14,15 @@ set_current_page(Page.PROFILE)
 # Usa o layout base
 api, user = base_layout("Meu Perfil", "👤")
 
-# 🔄 Força atualização dos dados do usuário (incluindo avatar e campos)
-try:
-    resp = api._request("GET", "/me")
-    if resp.status_code == 200:
-        user = resp.json()
-        st.session_state.user = user  # Atualiza sessão para refletir no menu lateral
-except Exception:
-    # Se falhar (ex: erro de conexão), usa os dados em cache da sessão
-    pass
+# 🔄 Otimização: Só busca do backend se faltar dados essenciais (evita delay)
+if not user.get("email"):
+    try:
+        resp = api._request("GET", "/me")
+        if resp.status_code == 200:
+            user = resp.json()
+            st.session_state.user = user  # Atualiza sessão
+    except Exception:
+        pass
 
 st.title("👤 Meu Perfil")
 st.caption("Gerencie suas informações pessoais e foto de perfil.")
@@ -45,11 +47,14 @@ with col_info:
                 )
 
                 if resp.status_code == 200:
-                    st.success(
-                        "Perfil atualizado com sucesso! Recarregue a página para ver as mudanças."
-                    )
-                    # Opcional: Forçar recarregamento dos dados do usuário na sessão
-                    # st.rerun()
+                    # 🔄 Recarrega dados do backend para garantir consistência total
+                    # (evita perder o avatar_path se o objeto local estiver desincronizado)
+                    user_resp = api._request("GET", "/me")
+                    if user_resp.status_code == 200:
+                        st.session_state.user = user_resp.json()
+
+                    st.success("Perfil atualizado com sucesso!")
+                    st.rerun()
                 else:
                     error_detail = resp.json().get("detail", "Erro ao atualizar")
                     if error_detail == "EMAIL_ALREADY_EXISTS":
@@ -63,24 +68,13 @@ with col_info:
 with col_avatar:
     st.subheader("📸 Foto de Perfil")
 
-    # Exibe avatar atual
-    avatar_path = user.get("avatar_path")
-    if avatar_path:
-        if avatar_path.startswith("/"):
-            img_url = f"{settings.API_BASE_URL}{avatar_path}"
-        else:
-            img_url = avatar_path
-    else:
-        nome = user.get("name") or user.get("username") or "User"
-        img_url = f"https://ui-avatars.com/api/?name={nome}&background=random&size=150"
-
-    st.image(img_url, width=150, caption="Avatar Atual")
-
     # Upload de nova foto
     uploaded_file = st.file_uploader("Alterar foto", type=["jpg", "png", "jpeg"])
 
     if uploaded_file:
-        if st.button("Enviar Foto"):
+        st.image(uploaded_file, width=150, caption="Pré-visualização")
+
+        if st.button("Salvar Nova Foto", type="primary"):
             with st.spinner("Enviando..."):
                 try:
                     # Prepara o arquivo para envio multipart/form-data
@@ -95,9 +89,28 @@ with col_avatar:
                     )
 
                     if resp.status_code == 200:
+                        # 🔄 Recarrega dados do backend para garantir consistência e URL atualizada
+                        user_resp = api._request("GET", "/me")
+                        if user_resp.status_code == 200:
+                            st.session_state.user = user_resp.json()
+
                         st.success("Avatar atualizado!")
                         st.rerun()
                     else:
                         st.error(f"Erro no upload: {resp.text}")
                 except Exception as e:
                     st.error(f"Erro ao enviar arquivo: {e}")
+    else:
+        # Exibe avatar atual
+        avatar_path = user.get("avatar_path")
+        if avatar_path:
+            if avatar_path.startswith("/"):
+                # ?v=timestamp força o navegador a recarregar a imagem (cache busting)
+                img_url = f"{settings.API_BASE_URL}{avatar_path}?v={int(time.time())}"
+            else:
+                img_url = avatar_path
+        else:
+            nome = user.get("name") or user.get("username") or "User"
+            img_url = f"https://ui-avatars.com/api/?name={nome}&background=random&size=150"
+
+        st.image(img_url, width=150, caption="Avatar Atual")

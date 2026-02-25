@@ -1,11 +1,10 @@
 import streamlit as st
 from charts.charts import grafico_evolucao
 
-from frontend.app_config import init_page
 from frontend.core.pages import Page
+from frontend.layouts.base_layout import base_layout
 from frontend.loaders.registros import carregar_registros
 from frontend.services.navigation import set_current_page
-from frontend.services.session import require_auth
 
 # 🔐 Interceptar reset token antes de exigir autenticação
 token = st.query_params.get("token", None)
@@ -18,7 +17,7 @@ if token:
 
 set_current_page(Page.HOME)
 
-api, user = require_auth()
+api, user = base_layout("Home • Painel", ":house:", wide=True)
 
 # st.code(user)
 
@@ -33,7 +32,6 @@ if user and user.get("password_expiring_soon"):
         )
 
 
-init_page(page_title="Home • Painel", page_icon=":house:", wide=True)
 st.title("📊 Painel Evolutivo de Dados")
 
 df = carregar_registros()
@@ -68,13 +66,6 @@ with st.sidebar:
 
     st.write("Refresh token")
     st.code(st.session_state.get("refresh_token"))
-
-    if user:
-        st.markdown(f"👤 **{user['username']}** ({user['role']})")
-        if st.button("🚪 Logout"):
-            st.session_state.clear()
-            api.logout()
-            st.switch_page(Page.LOGIN.path)
 
     if st.button("Recarregar dados"):
         st.cache_data.clear()

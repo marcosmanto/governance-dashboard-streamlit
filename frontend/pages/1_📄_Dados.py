@@ -1,12 +1,13 @@
 import streamlit as st
 
-# from data.loader import carregar_dados
-from frontend.app_config import init_page
+from frontend.core.pages import Page
+from frontend.layouts.base_layout import base_layout
 from frontend.loaders.registros import carregar_registros
+from frontend.services.navigation import set_current_page
 
-st.session_state.login_error_message = None
+set_current_page(Page.DATA)
 
-init_page(page_title="Dados detalhados", page_icon=":paper:")
+api, user = base_layout("Dados detalhados", ":paper:")
 
 st.title("📄 Dados detalhados")
 

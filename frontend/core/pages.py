@@ -4,6 +4,7 @@ from enum import Enum
 class Page(Enum):
     LOGIN = ("login", "pages/0_🔐_Login.py")
     HOME = ("home", "Home.py")
+    DATA = ("data", "pages/1_📄_Dados.py")
     GERENCIAR = ("gerenciar", "pages/2_✏️_Gerenciar.py")
     AUDITORIA = ("auditoria", "pages/3_📜_Auditoria.py")
     ADMIN = ("admin", "pages/4_🛠️_Administração.py")

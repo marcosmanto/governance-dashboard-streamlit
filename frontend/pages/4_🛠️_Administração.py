@@ -1,17 +1,12 @@
 import streamlit as st
 
-from frontend.app_config import init_page
 from frontend.core.pages import Page
+from frontend.layouts.base_layout import base_layout
 from frontend.services.navigation import set_current_page
-from frontend.services.session import require_auth
 
 set_current_page(Page.ADMIN)
 
-api, user = require_auth()
-
-init_page(page_title="Administração", page_icon=":material/handyman:", wide=True)
-
-st.session_state.login_error_message = None
+api, user = base_layout("Administração", ":material/handyman:", wide=True)
 
 # =====================
 # 🔐 Segurança

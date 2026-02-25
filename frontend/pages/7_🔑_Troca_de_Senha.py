@@ -5,8 +5,12 @@ import streamlit as st
 
 from backend.core.config import settings
 from frontend.core.pages import Page
+from frontend.layouts.base_layout import base_layout
 from frontend.services.navigation import set_current_page
-from frontend.services.session import require_auth
+
+set_current_page(Page.CHANGE_PASSWORD)
+
+api, user = base_layout("Troca de Senha", "🔑")
 
 carregando = st.session_state.get("loading_password_change")
 
@@ -70,10 +74,6 @@ if carregando:
         """,
         unsafe_allow_html=True,
     )
-
-set_current_page(Page.CHANGE_PASSWORD)
-
-api, user = require_auth()
 
 must_change_password = st.session_state.get("must_change_password")
 

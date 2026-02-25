@@ -2,16 +2,12 @@ import pandas as pd
 import streamlit as st
 
 from frontend.core.pages import Page
+from frontend.layouts.base_layout import base_layout
 from frontend.services.navigation import set_current_page
-from frontend.services.session import require_auth
 
 set_current_page(Page.USERS)
 
-api, user = require_auth()
-
-st.set_page_config(page_title="Administração de Usuários", layout="wide")
-
-st.session_state.login_error_message = None
+api, user = base_layout("Administração de Usuários", "🧑‍💼", wide=True)
 
 # =====================
 # 🔐 Segurança
