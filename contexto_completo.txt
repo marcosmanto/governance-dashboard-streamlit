@@ -1,0 +1,6379 @@
+CONTEXTO COMPLETO DO PROJETO
+============================
+
+
+
+==================================================
+FILE: .\.aiexclude
+==================================================
+# Bloqueio de credenciais e ambiente
+.env
+*.pem
+*.key
+
+# Bloqueio de dados e logs de processamento (Polars/Data Lake)
+**/data/*.parquet
+**/data/*.csv
+**/logs/
+
+# Bloqueio de arquivos de infraestrutura sensíveis
+docker-compose.override.yml
+nginx/conf.d/
+
+==================================================
+FILE: .\.env.example
+==================================================
+# AMBIENTE
+ENV=dev
+
+# SECURITY
+JWT_SECRET=JESUS_CRISTO_É_O_MEU_SENHOR
+JWT_ALGORITHM=HS256
+
+# EXPIRATIONS
+ACCESS_TOKEN_EXPIRE_MINUTES=15
+REFRESH_TOKEN_EXPIRE_DAYS=7
+
+# DATABASE
+DB_BACKEND=sqlite
+DB_DSN=./data/dados.db
+
+
+==================================================
+FILE: .\.gitignore
+==================================================
+__pycache__/
+*.pyc
+.env
+# Backups de bancos na pasta data
+/data/dados.bak_*.db
+TEMP_todelete.txt
+
+
+==================================================
+FILE: .\migrate.py
+==================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.util
+import sqlite3
+import sys
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+
+@dataclass
+class MigrationFile:
+    version: int
+    name: str
+    path: Path
+    kind: str  # 'sql' or 'py'
+    checksum: str
+
+
+def compute_checksum(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def discover_migrations(migrations_dir: Path) -> List[MigrationFile]:
+    files: List[MigrationFile] = []
+    for p in sorted(migrations_dir.glob("V*__*.*")):
+        if p.suffix.lower() not in (".sql", ".py"):
+            continue
+        stem = p.stem  # ex: V001__create_registros
+        try:
+            vpart, name = stem.split("__", 1)
+            version = int(vpart[1:])  # remove 'V'
+        except Exception:
+            print(f"Ignorando arquivo com nome inválido: {p.name}", file=sys.stderr)
+            continue
+
+        kind = p.suffix.lower().lstrip(".")
+        checksum = compute_checksum(p.read_bytes())
+        files.append(
+            MigrationFile(
+                version=version, name=name, path=p, kind=kind, checksum=checksum
+            )
+        )
+    return sorted(files, key=lambda m: m.version)
+
+
+def ensure_migrations_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            applied_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        )
+        """
+    )
+
+
+def get_applied(conn: sqlite3.Connection) -> Dict[int, Tuple[str, str]]:
+    # retorna {version: (name, checksum)}
+    rows = conn.execute(
+        "SELECT version, name, checksum FROM schema_migrations"
+    ).fetchall()
+    return {r[0]: (r[1], r[2]) for r in rows}
+
+
+def backup_db_online(db_path: Path) -> Path:
+    """
+    Usa a API de backup do SQLite (conn.backup) — funciona mesmo com o banco aberto,
+    evitando problemas de bloqueio no Windows.
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = db_path.with_name(f"{db_path.stem}.bak_{timestamp}{db_path.suffix}")
+    src = sqlite3.connect(str(db_path))
+    try:
+        dst = sqlite3.connect(str(backup_path))
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    print(f"[backup] {backup_path}")
+    return backup_path
+
+
+def apply_sql(conn: sqlite3.Connection, sql_text: str) -> None:
+    conn.executescript(sql_text)
+
+
+def apply_py(conn: sqlite3.Connection, file_path: Path) -> None:
+    # módulo com função obrigatória upgrade(conn)
+    spec = importlib.util.spec_from_file_location(file_path.stem, file_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Não foi possível carregar {file_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[attr-defined]
+    if not hasattr(module, "upgrade"):
+        raise RuntimeError(f"{file_path.name}: faltou função upgrade(conn).")
+    module.upgrade(conn)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Runner simples de migrações para SQLite (SQL e Python).",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--db", required=True, help="Caminho do arquivo .db")
+    parser.add_argument(
+        "--migrations", default="./migrations", help="Pasta das migrações"
+    )
+    parser.add_argument(
+        "--target-version", type=int, help="Versão-alvo (aplica até esta versão)"
+    )
+    parser.add_argument("--list", action="store_true", help="Lista migrações e sai")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Mostra o que faria, sem aplicar"
+    )
+    parser.add_argument(
+        "--fake",
+        action="store_true",
+        help="Marca como aplicado sem executar (use com cuidado)",
+    )
+    parser.add_argument(
+        "--init-if-missing",
+        action="store_true",
+        help="Cria o arquivo do banco (e pastas) se não existir, antes de aplicar as migrações",
+    )
+
+    args = parser.parse_args()
+
+    db_path = Path(args.db)
+    mig_dir = Path(args.migrations)
+
+    if not db_path.exists():
+        if args.init_if_missing:
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            # cria um DB vazio
+            sqlite3.connect(str(db_path)).close()
+            print(f"Banco de dados criado: {db_path}")
+        else:
+            print(f"ERRO: Banco de dados não encontrado: {db_path}", file=sys.stderr)
+            sys.exit(1)
+
+    if not mig_dir.exists():
+        print(f"ERRO: Pasta de migrações não encontrada: {mig_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    migrations = discover_migrations(mig_dir)
+    if args.list:
+        print("Migrações encontradas:")
+        for m in migrations:
+            print(f"  V{m.version:03d}  {m.name}  ({m.kind})  {m.path.name}")
+        return
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
+
+    try:
+        ensure_migrations_table(conn)
+        applied = get_applied(conn)
+
+        to_apply: List[MigrationFile] = []
+        for m in migrations:
+            if args.target_version is not None and m.version > args.target_version:
+                break
+            if m.version in applied:
+                # Verifica divergência de checksum (arquivo mudou após aplicado)
+                _, old_checksum = applied[m.version]
+                if old_checksum != m.checksum:
+                    print(
+                        f"⚠️ Divergência: V{m.version:03d} '{m.name}' já aplicado, "
+                        f"mas o arquivo atual mudou (checksum diferente).",
+                        file=sys.stderr,
+                    )
+                continue
+            to_apply.append(m)
+
+        if not to_apply:
+            print("Nada a aplicar. ✅")
+            return
+
+        print("Plano de aplicação:")
+        for m in to_apply:
+            print(f"  V{m.version:03d}  {m.name}  ({m.kind})")
+
+        if args.dry_run:
+            print("\n-- DRY RUN: nenhuma alteração foi feita.")
+            return
+
+        backup_db_online(db_path)
+
+        for m in to_apply:
+            print(f"Aplicando V{m.version:03d} {m.name} ({m.kind}) ...")
+            with conn:  # transação
+                if not args.fake:
+                    if m.kind == "sql":
+                        apply_sql(conn, m.path.read_text(encoding="utf-8"))
+                    else:
+                        apply_py(conn, m.path)
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, name, checksum) VALUES (?, ?, ?)",
+                    (m.version, m.name, m.checksum),
+                )
+        print("✅ Todas as migrações necessárias foram aplicadas com sucesso.")
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    main()
+
+
+==================================================
+FILE: .\MIGRATIONS.md
+==================================================
+# Migrações do SQLite — Guia do Projeto
+
+Este documento explica **o que são as migrações**, **como rodá‑las** no projeto e traz um **guia rápido** sobre idempotência, triggers, WAL, upsert **e os índices criados**, além de **documentar os objetivos das migrações disponíveis (V001, V002, V003)**.
+
+> Banco padrão usado nos exemplos: `./painel_dados_chatgpt_tutorial/data/dados.db`
+
+---
+
+## 1) Visão geral
+
+- As migrações ficam na pasta `./migrations` com o padrão `VNNN__descricao.ext` (`.sql` ou `.py`).
+- O `migrate.py` executa as migrações **em ordem** (V001 → V002 → V003...), registra o histórico em `schema_migrations` e cria **backup automático** (`.bak_YYYYMMDD_HHMMSS.db`).
+- Você pode **inicializar** o banco automaticamente com `--init-if-missing` (detalhes na seção 3).
+
+Estrutura típica:
+
+```
+painel_dados_chatgpt_tutorial/
+├─ data/
+│  └─ dados.db
+├─ migrations/
+│  ├─ V001__create_registros.py
+│  ├─ V002__auditoria_registros.py
+│  └─ V003__unicidade_upsert_e_wal.py
+└─ migrate.py
+```
+
+---
+
+## 2) Conceitos essenciais (linguagem simples)
+
+### 2.1 Idempotente
+
+> Rodar 1x ou 10x produz o **mesmo estado final**. Ex.: `CREATE TABLE IF NOT EXISTS` e checagens por catálogo antes de `ALTER TABLE`.
+
+### 2.2 WAL Mode (Write‑Ahead Logging)
+
+Melhora **desempenho e concorrência** (leitores não bloqueiam escritores). Persistente no arquivo após `PRAGMA journal_mode = WAL;`.
+
+### 2.3 Upsert
+
+`INSERT ... ON CONFLICT(chave) DO UPDATE ...` — insere se não existir, **atualiza** se já existir.
+
+### 2.4 PRAGMAs úteis para índices
+
+- `PRAGMA index_list('tabela')`: lista índices e mostra colunas `seq`, `name`, `unique`, `origin (c/u/pk)` e `partial (0/1)`.
+- `PRAGMA index_info('indice')` / `PRAGMA index_xinfo('indice')`: mostra **colunas** e **ordem** dentro do índice.
+
+> Referências: documentação de PRAGMAs do SQLite e materiais sobre `index_list`/`index_info`.
+
+---
+
+## 3) Como rodar as migrações
+
+### 3.1 Listar migrações
+
+```bash
+python migrate.py --db ./data/dados.db --migrations ./migrations --list
+```
+
+### 3.2 Simular (sem alterar o banco)
+
+```bash
+python migrate.py --db ./data/dados.db --migrations ./migrations --dry-run
+```
+
+### 3.3 Aplicar tudo (ordem crescente)
+
+```bash
+python migrate.py --db ./data/dados.db --migrations ./migrations
+```
+
+### 3.4 Aplicar até uma versão específica
+
+```bash
+python migrate.py --db ./data/dados.db --migrations ./migrations --target-version 2
+```
+
+### 3.5 Marcar como aplicado **sem executar** (cuidado)
+
+```bash
+python migrate.py --db ./data/dados.db --migrations ./migrations --fake
+```
+
+### 3.6 **Criar o arquivo do banco caso não exista**
+
+```bash
+python migrate.py --db ./data/dados.db --migrations ./migrations --init-if-missing
+```
+
+- Cria a **pasta** se faltar, gera um banco **vazio** e segue aplicando as migrações (V001 cria tabela e faz seed).
+
+> Dica de caminho: se você estiver **na pasta acima** do projeto, use `--db ./painel_dados_chatgpt_tutorial/data/dados.db` e `--migrations ./painel_dados_chatgpt_tutorial/migrations`.
+
+---
+
+## 4) Objetivos das migrações disponíveis
+
+### V001 — `create_registros` (Python)
+
+- Cria a tabela `registros` (`id`, `data`, `categoria`, `valor`).
+- **Seed idempotente**: insere dados iniciais apenas se a tabela estiver vazia.
+
+### V002 — `auditoria_registros` (Python)
+
+- Garante as colunas de auditoria: `criado_em`, `atualizado_em`, `origem` (adiciona se faltarem).
+- Backfill: preenche valores `NULL` com `CURRENT_TIMESTAMP` e default de `origem` (`'script_migracao'`).
+- (Re)cria **gatilhos**:
+  - `AFTER UPDATE`: atualiza `atualizado_em` quando você não alterou esse campo manualmente (evita loop).
+  - `AFTER INSERT`: se `criado_em`/`origem` vierem `NULL`, define defaults.
+- Cria índices em datas (`criado_em`, `atualizado_em`).
+
+### V003 — `unicidade_upsert_e_wal` (Python)
+
+- Remove **duplicados** por `(data, categoria)`, mantendo o mais recente.
+- Impõe unicidade com **índice único** `UNIQUE(data, categoria)`.
+- Cria **view** `vw_registros_upsert` + **gatilho `INSTEAD OF INSERT`** para permitir **upsert** via `INSERT` na view.
+- Ativa **WAL** e `synchronous = NORMAL` (aplicado fora de transação para persistir).
+
+> **Sobre `origem` no upsert da view:** a versão original da V003 definia `origem` como `'upsert'` quando ausente. Caso você prefira **manter a origem anterior** quando não enviar `origem` no upsert, ajuste o gatilho para enviar `NEW.origem` (sem `COALESCE('upsert')`) e usar `COALESCE(excluded.origem, registros.origem)` no `DO UPDATE`. Podemos disponibilizar uma V004 de ajuste se desejar.
+
+---
+
+## 5) Índices criados e o que cada um faz
+
+A tabela `registros` ficou com estes índices (nomes padrão das migrações):
+
+- **`ux_registros_data_categoria`** — **Único** (enforce): colunas `(data, categoria)`
+  - **Papel**: garante **no máximo 1 linha** por `(data, categoria)` e acelera buscas por `data` + `categoria` (seek único) e por faixas de `data`.
+  - **Exemplos**:
+    - `SELECT ... WHERE data='2025-01-02' AND categoria='A';`
+    - `SELECT ... WHERE data BETWEEN '2025-01-01' AND '2025-01-31';`
+
+- **`ix_registros_categoria_data`** — não-único: colunas `(categoria, data)`
+  - **Papel**: consultas que começam por **`categoria`** (igualdade) e refinam/ordenam por `data`.
+  - **Exemplos**:
+    - `SELECT ... WHERE categoria='A' AND data BETWEEN ...`
+    - `SELECT ... WHERE categoria='A' ORDER BY data DESC`
+
+- **`idx_registros_atualizado_em`** — não-único: coluna `(atualizado_em)`
+  - **Papel**: feeds de **recém-alterados** e filtros por período de atualização.
+
+- **`idx_registros_criado_em`** — não-único: coluna `(criado_em)`
+  - **Papel**: listagens/ordenações por **criação** e filtros por período.
+
+> **Por que dois índices compostos em ordens diferentes?** A ordem da coluna **à esquerda** num índice composto define os padrões que ele atende bem. `(data, categoria)` atende consultas que partem de `data`; `(categoria, data)` atende consultas que partem de `categoria`. Se um desses padrões não existe no seu uso, você pode remover o índice correspondente para reduzir custo de escrita.
+
+> Como inspecionar:
+>
+> ```sql
+> PRAGMA index_list('registros');
+> PRAGMA index_info('ux_registros_data_categoria');
+> PRAGMA index_info('ix_registros_categoria_data');
+> -- Para detalhes extras (ordem DESC, expressões):
+> PRAGMA index_xinfo('ux_registros_data_categoria');
+> ```
+
+---
+
+## 6) Dicas de desempenho e verificação
+
+- Use `EXPLAIN QUERY PLAN <sua_consulta>;` para ver qual índice o otimizador escolheu.
+- Evite índices redundantes: cada índice extra **encarece INSERT/UPDATE/DELETE**. Mantenha apenas os que cobrem suas consultas frequentes.
+- Para cargas massivas, faça **transações grandes** e, se preciso, use `INSERT ... ON CONFLICT` direto na tabela em vez da view.
+
+---
+
+## 7) Problemas comuns
+
+- **"Banco não encontrado"** → use `--init-if-missing` ou corrija o caminho do `--db`.
+- **Mudou arquivo de migração já aplicada (checksum diferente)** → crie uma **nova** migração para alterações posteriores.
+- **Horário**: `CURRENT_TIMESTAMP` é em **UTC** no SQLite. Se quiser horário local, ajuste gatilhos para `datetime('now','localtime')`.
+
+---
+
+## 8) Apêndice rápido sobre PRAGMAs de índice
+
+- `PRAGMA index_list('tabela')` retorna colunas: `seq`, `name`, `unique (0/1)`, `origin (c/u/pk)`, `partial (0/1)`.
+- `PRAGMA index_info('indice')` lista as colunas do índice (ordem importa!).
+- `PRAGMA index_xinfo('indice')` inclui detalhes extras (ex.: ordem DESC, colunas computadas).
+
+
+==================================================
+FILE: .\pyproject.toml
+==================================================
+
+[tool.ruff]
+line-length = 100   # ou 110/120, a seu gosto
+
+[tool.ruff.lint]
+# Não aplicar fix para F401 (unused-import) nem quando "Fix All" estiver ativo.
+unfixable = ["F401"]
+
+==================================================
+FILE: .\requirements.txt
+==================================================
+streamlit
+pandas
+plotly
+fastapi
+uvicorn
+python-multipart
+python-jose[cryptography]
+pydantic-settings
+passlib[bcrypt]
+bcrypt<4
+slowapi
+requests
+
+==================================================
+FILE: .\TEMP_todelete.txt
+==================================================
+
+
+
+ETAPA 13 — Deploy
+
+📦 Docker
+
+🔒 HTTPS
+
+🌍 Ambiente controlado
+
+
+
+📦 ETAPA 15 — Deploy
+
+Docker
+
+HTTPS
+
+Proxy reverso
+
+Variáveis seguras
+
+------------------------------------------
+🔜 Próximo passo (quando quiser)
+
+Agora sim você está pronto para escolher:
+
+🚀 ETAPA 14 — Deploy profissional
+
+🎨 Polimento final do Streamlit
+
+
+
+
+========================================================================================
+🔜 PRÓXIMAS ETAPAS (ordem correta)
+🔐 ETAPA 15 — Detecção e reação automática a violação
+🎯 Objetivo
+
+Quando a cadeia quebrar:
+
+Detectar automaticamente
+
+Reagir automaticamente
+
+Registrar evidência
+
+Implementações
+15.1 — Status global de integridade
+
+Criar uma tabela simples:
+
+audit_integrity (
+    id INTEGER PRIMARY KEY,
+    last_check_at TEXT,
+    status TEXT,           -- OK | VIOLATED
+    violated_at TEXT,
+    violated_event_id INTEGER,
+    reason TEXT
+)
+
+
+📌 Um único registro (singleton).
+
+15.2 — Verificação atualiza o status
+
+Quando /admin/audit/verify rodar:
+
+Se OK → status = OK
+
+Se falha → status = VIOLATED
+
+salvar event_id
+
+salvar motivo
+
+👉 Esse status vira a verdade global do sistema.
+
+15.3 — Middleware de bloqueio de escrita
+
+📄 backend/audit/guard.py
+
+def assert_integrity_ok():
+    status = get_integrity_status()
+    if status != "OK":
+        raise HTTPException(
+            status_code=423,
+            detail="Sistema bloqueado: auditoria violada"
+        )
+
+
+Aplicar em:
+
+POST
+
+PUT
+
+DELETE
+
+💣 Sistema entra em modo somente leitura automaticamente.
+
+🔔 ETAPA 16 — Evidência e alerta
+16.1 — Evento especial de violação
+
+Quando detectar falha:
+
+action = "AUDIT_VIOLATION"
+resource = "auditoria"
+
+
+Esse evento:
+
+NÃO entra na cadeia
+
+É registrado separadamente
+
+Serve como evidência legal
+
+16.2 — Exportação de prova
+
+Gerar relatório com:
+
+Evento onde quebrou
+
+Hash esperado
+
+Hash encontrado
+
+Timestamp
+
+Usuário do último evento válido
+
+Formato:
+
+CSV
+
+JSON
+
+(opcional) PDF
+
+🔗 ETAPA 17 — Ancoragem criptográfica (nível máximo)
+
+Agora você fecha com chave de ouro.
+
+17.1 — Hash âncora diária
+
+1x por dia:
+
+hash_dia = hash(último_event_hash)
+
+
+Salvar em:
+
+arquivo imutável
+
+repositório Git
+
+e-mail
+
+blockchain pública (opcional)
+
+📌 Mesmo que apaguem o banco inteiro, você prova violação.
+
+🧾 ETAPA 18 — Relatório de governança
+
+Gerar automaticamente:
+
+Arquitetura
+
+Fluxo de auditoria
+
+Modelo de hash
+
+Política de retenção
+
+Política de resposta a incidentes
+
+👉 Isso vira:
+
+Documento institucional
+
+Base para compliance
+
+Material de apresentação
+
+🧠 Resumo brutalmente honesto
+
+Você saiu de:
+
+“dashboard com streamlit”
+
+Para:
+
+plataforma de governança com trilha imutável, reação automática e prova criptográfica
+
+Isso é nível sistema financeiro / órgão regulador.
+
+
+3️⃣ E-mail real
+4️⃣ MFA
+
+Se quiser, posso agora:
+
+🔐 consolidar um bloco “Security Model” no README
+
+📊 desenhar o fluxo completo de autenticação
+
+🚀 partir para MFA
+
+📧 ou implementar envio real de e-mail no forgot-password
+
+
+
+---------
+
+Performance
+
+Auditoria avançada
+
+Hardening do backend
+
+Dockerização e deploy
+
+Organização do frontend
+
+
+-------------------------------
+
+
+Se quiser, posso agora:
+
+Criar endpoint admin para atualizar email
+
+Implementar validação de email único
+
+Implementar tela intermediária estilo “Senha alterada com sucesso”
+
+Mostrar botão "Ir para login agora"
+
+Adicionar animação de confirmação
+
+Mostrar barra de progresso no redirect
+
+
+🧩 6️⃣ Pergunta Estratégica
+
+Antes de avançarmos:
+
+Você quer agora focar em:
+
+A) 🔐 Evolução da Auditoria (ETAPA 15–17)
+B) 🧱 Refatoração de arquitetura (remover middleware audit problemático)
+C) 🚀 Docker + Deploy profissional
+D) 🎨 Streamlit robusto (sessão persistente, UX, estado pós F5)
+E) 🔒 Segurança avançada (MFA, rate limit adaptativo, hardening)
+
+==================================================
+FILE: .\.continue\rules\commit-message-guidelines.md
+==================================================
+---
+globs: "[\"['./*.py', '*.bat', '*.toml', '*.json', '*.md']\"]"
+description: Commit messages should follow conventional commit format (e.g.,
+  'feat:', 'fix:', 'chore:') and include a brief description. Configuration
+  changes should explain the reason for the change.
+alwaysApply: true
+---
+
+Write clear, concise commit messages following conventional commit format. Use imperative mood. Include context for complex changes. Limit to 256 characters if possible. For configuration changes, explain why the change was made.
+
+==================================================
+FILE: .\.continue\rules\project_structure.md
+==================================================
+# Arquitetura Painel de Dados
+
+Este é um projeto de análise de dados e dashboard utilizando Python, Pandas, Polars e Streamlit.
+
+## Estrutura de Diretórios
+- `/backend`: Lógica de negócio, CRUD e conexão com banco de dados (SQLAlchemy/SQLite).
+- `/frontend`: Interface do usuário em Streamlit (`Home.py` e `/pages`).
+- `/migrations`: Scripts de migração de banco de dados.
+- `/data`: Armazenamento de dados brutos e bancos SQLite (APENAS LEITURA).
+
+## Padrões de Código (Data Owner Guidelines)
+1. **Bibliotecas:** Priorize `polars` para manipulação de dados e `streamlit` para UI.
+2. **Banco de Dados:** O arquivo principal é `dados.db`. Ignore arquivos `.bak`.
+3. **Auditoria:** Toda alteração de dados deve passar pelo `crud_auditoria.py`.
+4. **Performance:** Evite carregar datasets inteiros em memória; use LazyFrames.
+
+## O que Ignorar
+Não analise, indexe ou sugira alterações em arquivos dentro de:
+- `.venv`
+- `__pycache__`
+- Arquivos `.pptx`, `.pdf` ou `.docx`.
+
+
+# Estrutura do Projeto SARI / Painel de Dados
+
+Este é um projeto fullstack Python focada em dados da ANTT. O Agente deve navegar nas pastas abaixo para entender o contexto.
+
+## Mapeamento de Diretórios
+- **/backend**: Contém a API e regras de negócio (FastAPI/Python).
+  - `/audit`: Lógica crítica de auditoria (`hash.py`, `middleware.py`). **Prioridade Máxima.**
+  - `/db`: Adaptadores de banco de dados (Postgres/SQLite).
+  - `/users`: Gestão de usuários e autenticação.
+- **/frontend**: Interface do usuário (`streamlit`).
+  - `Home.py`: Entrypoint da aplicação.
+  - `/pages`: Telas do sistema.
+- **/migrations**: Scripts SQL e Python para versionamento do banco.
+- **/data**: Arquivos `.db` (SQLite) e `.parquet`. **O Agente NÃO deve ler o conteúdo binário destes arquivos, apenas a estrutura.**
+
+## Stack Tecnológico
+- **Lógica:** Python 3.12+ (Uso intensivo de Type Hints).
+- **Dados:** Polars (Preferencial para volumetria) e Pandas (Legado).
+- **Interface:** Streamlit.
+- **ORM:** SQLAlchemy.
+
+## Regras de Negócio (CODAM)
+- Nunca exponha senhas ou chaves de API.
+- Alterações em `/backend/audit` exigem validação de hash chain.
+- O sistema deve ser agnóstico ao S.O. (Windows/Linux).
+
+==================================================
+FILE: .\.streamlit\config.toml
+==================================================
+[theme]
+base="dark"
+#codeBackgroundColor="powderBlue"
+
+
+
+==================================================
+FILE: .\backend\crud.py
+==================================================
+from typing import Any, Dict, List
+
+from backend.db import connect, execute, normalize_error, query
+
+
+def obter_registro_por_id(id_) -> Dict[str, Any] | None:
+    conn = connect()
+    try:
+        rows = query(
+            conn,
+            """
+            SELECT id, data, categoria, valor
+            FROM registros
+            WHERE id = :id
+            """,
+            {
+                "id": id_,
+            },
+        )
+        if not rows:
+            return None
+
+        row = rows[0]
+        return {
+            "id": row[0],
+            "data": row[1],
+            "categoria": row[2],
+            "valor": row[3],
+        }
+    except Exception as exc:
+        conn.rollback()
+        raise normalize_error(exc)
+    finally:
+        conn.close()
+
+
+def listar_registros() -> List[Dict[str, Any]]:
+    conn = connect()
+    try:
+        rows = query(conn, "SELECT * FROM registros ORDER BY data DESC")
+        result = []
+        for r in rows:
+            if isinstance(r, dict) or hasattr(r, "keys"):  # sqlite3.Row
+                result.append(
+                    {
+                        "id": r["id"],
+                        "data": r["data"],
+                        "categoria": r["categoria"],
+                        "valor": r["valor"],
+                    }
+                )
+            else:
+                result.append(
+                    {
+                        "id": r[0],
+                        "data": r[1],
+                        "categoria": r[2],
+                        "valor": r[3],
+                    }
+                )
+        return result
+    finally:
+        conn.close()
+
+
+def inserir_registro(registro, origem: str = "streamlit") -> None:
+    conn = connect()
+    try:
+        execute(
+            conn,
+            "INSERT INTO registros (data, categoria, valor, origem) VALUES (:data, :categoria, :valor, :origem)",
+            {
+                "data": registro.data,
+                "categoria": registro.categoria,
+                "valor": registro.valor,
+                "origem": origem,
+            },
+        )
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        raise normalize_error(exc)
+    finally:
+        conn.close()
+
+
+def upsert_registro(registro, origem: str = "streamlit") -> None:
+    """
+    UP SERT VIA VIEW (vw_registros_upsert) — COMO FUNCIONA E IMPACTO NA CONSISTÊNCIA
+
+    1) Chave lógica e unicidade:
+       - A unicidade de (data, categoria) é garantida por um ÍNDICE UNIQUE criado na migration V003.
+         Isso significa que, independente da rota (view ou insert direto na tabela), o banco
+         NÃO permitirá duas linhas distintas com o mesmo par (data, categoria).
+
+    2) Por que usar a VIEW para escrever?
+       - A view tem um gatilho INSTEAD OF INSERT que traduz o insert em:
+           INSERT INTO registros (...)
+           ON CONFLICT(data, categoria) DO UPDATE ...
+         Ou seja, se já existir um registro com (data, categoria), em vez de falhar, o
+         comando vira um UPDATE atômico da linha existente (padrão “last-write-wins”).
+       - Benefício: sua aplicação fica idempotente quanto à chave lógica; você pode “inserir”
+         sempre que quiser, e o banco decide se insere ou atualiza sem erro de integridade.
+
+    3) E se eu fizer INSERT direto na tabela (sem a view)?
+       - A integridade também é verificada porque o UNIQUE está na TABELA.
+       - Diferença: o INSERT direto vai levantar sqlite3.IntegrityError se o par (data, categoria)
+         já existir, pois não há a cláusula ON CONFLICT para converter em UPDATE. Você teria
+         que tratar a exceção e decidir o que fazer (ex.: tentar um UPDATE depois).
+       - Resumo:
+           • INSERT via VIEW  -> nunca cria duplicado; resolve conflito com UPDATE automático.
+           • INSERT direto    -> integridade é verificada igual; porém, em caso de duplicidade,
+                                 sua aplicação recebe ERRO em vez de “update automático”.
+
+    4) Timestamps com seu desenho atual (V002 + V003):
+       - No caminho INSERT (sem conflito):
+           • 'criado_em' é preenchido por trigger AFTER INSERT se vier NULL.
+           • 'atualizado_em' NÃO é setado automaticamente no INSERT (fica NULL até o primeiro UPDATE).
+       - No caminho UPDATE (conflito pelo UPSERT ou UPDATE por id):
+           • 'atualizado_em' é atualizado para CURRENT_TIMESTAMP (via DO UPDATE da view ou via trigger AFTER UPDATE).
+       - Se você preferir que 'atualizado_em' já nasça igual ao 'criado_em' nos INSERTs sem conflito,
+         há duas opções:
+           (a) criar um trigger AFTER INSERT que set 'atualizado_em = CURRENT_TIMESTAMP' quando for NULL; ou
+           (b) alterar o trigger da VIEW para já inserir 'atualizado_em = CURRENT_TIMESTAMP' no caminho INSERT.
+
+    5) Concorrência:
+       - Você habilitou WAL na V003, o que melhora leituras concorrentes e reduz bloqueios.
+       - O UPSERT (INSERT ... ON CONFLICT DO UPDATE) é atômico por linha; duas gravações simultâneas
+         para a mesma (data, categoria) não criam duplicado — no pior caso, a última vence.
+         Se você precisar mesclar valores (ex.: somar 'valor' em vez de sobrescrever), basta
+         ajustar a cláusula DO UPDATE para refletir essa regra.
+
+    6) Quando usar cada rota?
+       - Use SEMPRE a VIEW quando a “identidade” do registro for (data, categoria) e você
+         quiser evitar lidar com erros de duplicidade no app.
+       - Use UPDATE por id (id_) quando a edição for explícita de uma linha específica.
+    """
+    conn = connect()
+    try:
+        # Insere na VIEW; o gatilho INSTEAD OF converte em INSERT ... ON CONFLICT ... faz UPDATE
+        execute(
+            conn,
+            "INSERT INTO vw_registros_upsert (data, categoria, valor, origem) VALUES (:data, :categoria, :valor, :origem)",
+            {
+                "data": registro.data,
+                "categoria": registro.categoria,
+                "valor": registro.valor,
+                "origem": origem,
+            },
+        )
+        conn.commit()
+
+    except Exception as exc:
+        conn.rollback()
+        raise normalize_error(exc)
+    finally:
+        conn.close()
+
+
+def atualizar_registro_com_auditoria(id_, registro):
+    """
+    Atualiza um registro por ID e retorna (antes, depois).
+    Retorna None se o registro não existir.
+    """
+
+    conn = connect()
+    try:
+        antes = obter_registro_por_id(id_)
+        if not antes:
+            return None
+
+        execute(
+            conn,
+            """
+            UPDATE registros
+               SET data = :data, categoria = :categoria, valor = :valor
+             WHERE id = :id
+            """,
+            {
+                "data": registro.data,
+                "categoria": registro.categoria,
+                "valor": registro.valor,
+                "id": id_,
+            },
+        )
+
+        conn.commit()
+        depois = obter_registro_por_id(id_)
+        return antes, depois
+
+    except Exception as exc:
+        conn.rollback()
+        raise normalize_error(exc)
+    finally:
+        conn.close()
+
+
+def atualizar_registro(id_, registro) -> bool:
+    """
+    Atualiza um registro por ID.
+    - Não altera 'atualizado_em' manualmente; trigger cuida disso.
+    - Pode lançar sqlite3.IntegrityError se (data, categoria) colidir com outro registro.
+    Retorna:
+        True  -> se 1 linha foi atualizada
+        False -> se nenhum registro com esse id_ foi encontrado
+    """
+
+    conn = connect()
+    try:
+        cur = execute(
+            conn,
+            """
+            UPDATE registros
+               SET data = :data, categoria = :categoria, valor = :valor
+             WHERE id = :id
+            """,
+            {
+                "data": registro.data,
+                "categoria": registro.categoria,
+                "valor": registro.valor,
+                "id": id_,
+            },
+        )
+        conn.commit()
+        return cur.rowcount == 1
+
+    except Exception as exc:
+        # ocorre se (data, categoria) já existir em outro registro (índice UNIQUE)
+        conn.rollback()
+        raise normalize_error(exc)
+    finally:
+        conn.close()
+
+
+def deletar_registro_com_auditoria(id_) -> None:
+    conn = connect()
+    try:
+        antes = obter_registro_por_id(id_)
+        if not antes:
+            return None
+
+        execute(
+            conn,
+            "DELETE FROM registros WHERE id = :id",
+            {"id": id_},
+        )
+        conn.commit()
+        return antes
+    except Exception as exc:
+        conn.rollback()
+        raise normalize_error(exc)
+    finally:
+        conn.close()
+
+
+def deletar_registro(id_) -> None:
+    conn = connect()
+    try:
+        execute(
+            conn,
+            "DELETE FROM registros WHERE id = :id",
+            {"id": id_},
+        )
+        conn.commit()
+
+    except Exception as exc:
+        conn.rollback()
+        raise normalize_error(exc)
+    finally:
+        conn.close()
+
+
+==================================================
+FILE: .\backend\crud_auditoria.py
+==================================================
+from backend.db import connect, normalize_error, query
+
+
+def listar_auditoria(
+    *,
+    username=None,
+    action=None,
+    resource=None,
+    data_inicio=None,
+    data_fim=None,
+    limit=500,
+):
+    conn = connect()
+    try:
+        sql = """
+        SELECT id, timestamp, username, role, action,
+               resource, resource_id,
+               payload_before, payload_after,
+               endpoint, method
+          FROM auditoria
+         WHERE 1=1
+        """
+
+        params = {}
+
+        if username:
+            sql += " AND username = :username"
+            params["username"] = username
+
+        if action:
+            sql += " AND action = :action"
+            params["action"] = action
+
+        if resource:
+            sql += " AND resource = :resource"
+            params["resource"] = resource
+
+        # =========================
+        # 🗓️ FILTRO POR DATA
+        # =========================
+        if data_inicio:
+            sql += " AND timestamp >= :data_inicio"
+            params["data_inicio"] = f"{data_inicio}T00:00:00"
+
+        if data_fim:
+            sql += " AND timestamp <= :data_fim"
+            params["data_fim"] = f"{data_fim}T23:59:59.999999"
+
+        sql += " ORDER BY timestamp DESC LIMIT :limit"
+        params["limit"] = limit
+
+        rows = query(conn, sql, params)
+
+        return [
+            {
+                "id": row["id"],
+                "timestamp": row["timestamp"],
+                "username": row["username"],
+                "role": row["role"],
+                "action": row["action"],
+                "resource": row["resource"],
+                "resource_id": row["resource_id"],
+                "payload_before": row["payload_before"],
+                "payload_after": row["payload_after"],
+                "endpoint": row["endpoint"],
+                "method": row["method"],
+            }
+            for row in rows
+        ]
+
+    except Exception as exc:
+        raise normalize_error(exc)
+    finally:
+        conn.close()
+
+
+==================================================
+FILE: .\backend\database.py
+==================================================
+from backend.db import connect as get_connection
+
+# shim de compatibilidade para antigo código
+__all__ = ["get_connection"]
+
+
+==================================================
+FILE: .\backend\main.py
+==================================================
+import logging
+import os
+from datetime import date
+from typing import List
+
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.staticfiles import StaticFiles
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+from backend.audit.middleware import AuditMiddleware
+from backend.audit.service import registrar_evento
+from backend.audit.verify import verificar_integridade_auditoria
+from backend.auth.dependencies import get_current_user
+from backend.auth.jwt import decode_token
+from backend.auth.permissions import require_role
+from backend.auth.service import (
+    cleanup_expired_sessions,
+    cleanup_revoked_sessions,
+    issue_new_access_token,
+    login_user,
+    logout_session,
+    revoke_all_sessions,
+    revoke_session_by_id,
+)
+from backend.core.config import settings
+from backend.core.exceptions import register_exception_handlers, register_rate_limit_exception
+from backend.crud import (
+    # atualizar_registro,
+    atualizar_registro_com_auditoria,
+    deletar_registro_com_auditoria,
+    # deletar_registro,
+    listar_registros,
+    obter_registro_por_id,
+    # inserir_registro,
+    upsert_registro,
+)
+from backend.crud_auditoria import listar_auditoria
+from backend.db import connect
+from backend.db.errors import DuplicateKeyError
+from backend.models import AuditoriaOut, RegistroIn, RegistroOut, User, UserContext, UserLoginOut
+from backend.users.admin import router as admin_router
+from backend.users.service import authenticate_user
+from backend.users.users import router as users_router
+
+app = FastAPI(title="Governance Dashboard API")
+
+# Garante que o diretório de arquivos estáticos exista antes de montar
+os.makedirs("backend/static", exist_ok=True)
+
+app.mount("/static", StaticFiles(directory="backend/static"), name="static")
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+logger = logging.getLogger("auth-debug")
+logger.setLevel(logging.DEBUG)
+
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    logger.addHandler(handler)
+
+if settings.ENV == "dev":
+    register_exception_handlers(app, logger)
+
+register_rate_limit_exception(app)
+
+app.add_middleware(AuditMiddleware)
+# 🔐 Rotas administrativas
+app.include_router(admin_router)
+# 🔓 Rotas públicas
+app.include_router(users_router)
+
+
+@app.get("/registros", response_model=List[RegistroOut])
+def get_registros():  # user: User = Depends(get_current_user)):
+    return listar_registros()
+
+
+@app.post("/registros", status_code=201)
+def post_registro(
+    registro: RegistroIn,
+    user: UserContext = Depends(get_current_user),
+):
+    require_role("editor", "admin")(user)
+    try:
+        # inserir_registro(registro)
+        upsert_registro(registro)
+        return {"message": "Registro inserido/atualizado (UPSERT) com sucesso"}
+    except DuplicateKeyError:
+        # Só ocorreria se você usar INSERT direto na tabela sem view, por exemplo.
+        raise HTTPException(status_code=409, detail="Duplicidade em (data, categoria)")
+
+
+@app.get("/registros/{id_}", response_model=RegistroOut)
+def get_registro(
+    id_: int,
+    user: UserContext = Depends(get_current_user),
+):
+    registro = obter_registro_por_id(id_)
+    if not registro:
+        raise HTTPException(status_code=404, detail="Registro não encontrado")
+    return registro
+
+
+@app.put("/registros/{id_}")
+def put_registro(
+    id_: int,
+    registro: RegistroIn,
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+):
+    require_role("editor", "admin")(user)
+
+    resultado = atualizar_registro_com_auditoria(id_, registro)
+    if not resultado:
+        raise HTTPException(status_code=404, detail="Registro não encontrado")
+
+    antes, depois = resultado
+
+    registrar_evento(
+        username=user.username,
+        role=user.role,
+        action="UPDATE",
+        resource="registros",
+        resource_id=id_,
+        payload_before=antes,
+        payload_after=depois,
+        endpoint=request.url.path,
+        method=request.method,
+    )
+    return {"message": "Registro atualizado com sucesso"}
+
+
+@app.delete("/registros/{id_}")
+def delete_registro(
+    id_: int,
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+):
+    require_role("admin")(user)
+
+    antes = deletar_registro_com_auditoria(id_)
+    if not antes:
+        raise HTTPException(status_code=404, detail="Registro não encontrado")
+
+    registrar_evento(
+        username=user.username,
+        role=user.role,
+        action="DELETE",
+        resource="registros",
+        resource_id=id_,
+        payload_before=antes,
+        payload_after=None,
+        endpoint=request.url.path,
+        method=request.method,
+    )
+    return {"message": "Registro excluído com sucesso"}
+
+
+@app.get("/auditoria", response_model=List[AuditoriaOut])
+def get_auditoria(
+    username: str | None = None,
+    action: str | None = None,
+    resource: str | None = None,
+    data_inicio: date | None = None,
+    data_fim: date | None = None,
+    user: UserContext = Depends(get_current_user),
+):
+    # 🔐 só admin pode consultar auditoria
+    require_role("admin")(user)
+
+    return listar_auditoria(
+        username=username,
+        action=action,
+        resource=resource,
+        data_inicio=data_inicio.isoformat() if data_inicio else None,
+        data_fim=data_fim.isoformat() if data_fim else None,
+    )
+
+
+@app.post("/logout")
+def logout(user: UserContext = Depends(get_current_user)):
+    logout_session(user.session_id)
+    return {"message": "Logout realizado com sucesso"}
+
+
+@app.post("/logout_all")
+def logout_all(user: UserContext = Depends(get_current_user)):
+    # logout global (tipo “sair de todos dispositivos”):
+    revoke_all_sessions(user.username)
+    return {"message": "Todas as sessões foram encerradas"}
+
+
+@app.post("/login", response_model=UserLoginOut)
+@limiter.limit("5/minute")
+def login(request: Request, username: str, password: str):
+    user = authenticate_user(username, password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Credenciais inválidas")
+
+    access_token, refresh_token = login_user(
+        user["username"],
+        user["role"],
+    )
+
+    if user["must_change_password"]:
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "must_change_password": True,
+            "user": None,
+        }
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user": user,
+        "must_change_password": False,
+    }
+
+
+@app.post("/refresh")
+@limiter.limit("5/minute")
+def refresh_token(
+    request: Request,
+    payload: dict = Depends(decode_token),
+):
+    if payload.get("type") != "refresh":
+        raise HTTPException(status_code=401, detail="Token inválido")
+    try:
+        usertokens = issue_new_access_token(payload)
+        return usertokens
+    except HTTPException:
+        raise  # Re-raise the HTTPException directly
+    except Exception:
+        # detail=str(e) => Nunca exponha str(e). Pode acabar expondo: Erros internos, mensagens de banco, Stack trace parcial
+        raise HTTPException(status_code=401, detail="REFRESH_FAILED")
+
+
+@app.post("/admin/users/{username}/sessions/revoke")
+def revoke_user_sessions(username: str, user: UserContext = Depends(get_current_user)):
+    require_role("admin")(user)
+    revoke_all_sessions(username)
+    return {"message": f"Sessões de {username} revogadas com sucesso"}
+
+
+@app.post("/admin/sessions/{session_id}/revoke")
+def revoke_single_session(
+    session_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    require_role("admin")(user)
+    revoke_session_by_id(session_id)
+    return {"message": "Sessão revogada"}
+
+
+@app.post("/admin/sessions/cleanup")
+def cleanup_sessions(user: UserContext = Depends(get_current_user)):
+    require_role("admin")(user)
+    count = cleanup_expired_sessions()
+    return {
+        "deleted_sessions": count,
+        "message": "Sessões expiradas foram excluídas com sucesso",
+    }
+
+
+@app.post("/admin/sessions/revoked/cleanup")
+def cleanup_sessions_revoked(user: UserContext = Depends(get_current_user)):
+    require_role("admin")(user)
+    count = cleanup_revoked_sessions()
+    return {
+        "deleted_sessions": count,
+        "message": "Sessões revogadas foram excluídas com sucesso",
+    }
+
+
+@app.get("/admin/audit/verify")
+def verify_audit_chain(user: UserContext = Depends(get_current_user)):
+    require_role("admin")(user)
+    conn = connect()
+    try:
+        return verificar_integridade_auditoria(conn)
+    finally:
+        conn.close()
+
+
+==================================================
+FILE: .\backend\models.py
+==================================================
+from datetime import date
+from typing import Literal, Optional
+
+from pydantic import BaseModel, Field
+
+Role = Literal["reader", "editor", "admin"]
+
+
+class User(BaseModel):
+    username: str
+    role: Role
+    email: str | None = None
+    name: str | None = None
+    fullname: str | None = None
+    avatar_path: str | None = None
+
+
+class RegistroIn(BaseModel):
+    data: date
+    categoria: str = Field(min_length=1)
+    valor: int
+
+
+class RegistroOut(RegistroIn):
+    id: int
+
+
+class AuditoriaOut(BaseModel):
+    id: int
+    timestamp: str
+    username: str
+    role: str
+    action: str
+    resource: str
+    resource_id: Optional[int]
+    payload_before: Optional[str]
+    payload_after: Optional[str]
+    endpoint: str
+    method: str
+
+
+class UserLoginOut(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    user: dict | None = None
+    must_change_password: bool = False
+
+
+class UserContext(BaseModel):
+    username: str
+    role: str
+    session_id: str
+    must_change_password: bool = False
+    is_active: bool = True
+    created_at: Optional[str] = None
+    password_expiring_soon: bool = False
+    password_days_remaining: Optional[int] = None
+
+
+==================================================
+FILE: .\backend\__init__.py
+==================================================
+
+
+==================================================
+FILE: .\backend\audit\hash.py
+==================================================
+import hashlib
+import json
+
+
+def compute_event_hash(
+    *,
+    timestamp,
+    username,
+    role,
+    action,
+    resource,
+    resource_id,
+    payload_before,
+    payload_after,
+    endpoint,
+    method,
+    prev_hash,
+):
+    canonical = {
+        "timestamp": timestamp,
+        "username": username,
+        "role": role,
+        "action": action,
+        "resource": resource,
+        "resource_id": resource_id,
+        "payload_before": payload_before,
+        "payload_after": payload_after,
+        "endpoint": endpoint,
+        "method": method,
+        "prev_hash": prev_hash,
+    }
+
+    raw = json.dumps(canonical, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+==================================================
+FILE: .\backend\audit\middleware.py
+==================================================
+import json
+from typing import Optional
+
+from fastapi import Request
+from fastapi.responses import Response
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from backend.audit.service import registrar_evento
+from backend.models import UserContext
+
+
+class AuditMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response: Response = await call_next(request)
+
+        # 🔐 Se usuário autenticado foi resolvido pela dependency
+        user: Optional[UserContext] = getattr(request.state, "user", None)
+
+        if user:
+            response.headers["X-User-Context"] = json.dumps(
+                {
+                    "username": user.username,
+                    "role": user.role,
+                    "session_id": user.session_id,
+                    "must_change_password": user.must_change_password,
+                    "password_expiring_soon": user.password_expiring_soon,
+                    "password_days_remaining": user.password_days_remaining,
+                }
+            )
+
+        # Só audita mutações bem-sucedidas
+        if request.method not in ("POST", "PUT", "DELETE"):
+            return response
+
+        if response.status_code >= 400:
+            return response
+
+        if not user:
+            return response
+
+        if request.method in ("POST", "GET"):
+            registrar_evento(
+                username=user.username,
+                role=user.role,
+                action=request.method,
+                resource="registros",
+                resource_id=None,  # ajustaremos nos endpoints
+                payload_before=None,
+                payload_after=None,
+                endpoint=str(request.url.path),
+                method=request.method,
+            )
+
+        return response
+
+
+==================================================
+FILE: .\backend\audit\service.py
+==================================================
+import json
+from datetime import datetime, timezone
+
+from backend.audit.hash import compute_event_hash
+from backend.db import connect, execute, normalize_error, query
+
+
+def obter_ultimo_hash(conn):
+    rows = query(
+        conn,
+        """
+        SELECT event_hash
+            FROM auditoria
+        WHERE event_hash IS NOT NULL
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        {},
+    )
+    return rows[0]["event_hash"] if rows else None
+
+
+def registrar_evento(
+    *,
+    username: str,
+    role: str,
+    action: str,
+    resource: str,
+    resource_id: int | None,
+    payload_before: dict | None,
+    payload_after: dict | None,
+    endpoint: str,
+    method: str,
+    conn=None,
+):
+    owns_conn = False
+
+    if conn is None:
+        conn = connect()
+        owns_conn = True
+
+    try:
+        # 1️⃣ Normalizar payloads ANTES (string única e determinística) e gerar timestamp
+        payload_before_json = (
+            json.dumps(payload_before, sort_keys=True, ensure_ascii=False)
+            if payload_before
+            else None
+        )
+        payload_after_json = (
+            json.dumps(payload_after, sort_keys=True, ensure_ascii=False) if payload_after else None
+        )
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        # 2️⃣ Buscar hash anterior
+        prev_hash = obter_ultimo_hash(conn)
+
+        # 3️⃣ Calcular hash do evento (usando exatamente o que será salvo)
+        event_hash = compute_event_hash(
+            timestamp=timestamp,
+            username=username,
+            role=role,
+            action=action,
+            resource=resource,
+            resource_id=resource_id,
+            payload_before=payload_before_json,
+            payload_after=payload_after_json,
+            endpoint=endpoint,
+            method=method,
+            prev_hash=prev_hash,
+        )
+
+        # 4️⃣ Persistir evento COM hash
+        execute(
+            conn,
+            """
+            INSERT INTO auditoria (
+                timestamp,
+                username,
+                role,
+                action,
+                resource,
+                resource_id,
+                payload_before,
+                payload_after,
+                endpoint,
+                method,
+                prev_hash,
+                event_hash
+            )
+            VALUES (
+                :timestamp,
+                :username,
+                :role,
+                :action,
+                :resource,
+                :resource_id,
+                :payload_before,
+                :payload_after,
+                :endpoint,
+                :method,
+                :prev_hash,
+                :event_hash
+            )
+            """,
+            {
+                "timestamp": timestamp,
+                "username": username,
+                "role": role,
+                "action": action,
+                "resource": resource,
+                "resource_id": resource_id,
+                "payload_before": payload_before_json,
+                "payload_after": payload_after_json,
+                "endpoint": endpoint,
+                "method": method,
+                "prev_hash": prev_hash,
+                "event_hash": event_hash,
+            },
+        )
+
+        if owns_conn:
+            conn.commit()
+
+    except Exception as exc:
+        if owns_conn:
+            conn.rollback()
+        raise normalize_error(exc)
+    finally:
+        if owns_conn:
+            conn.close()
+
+
+==================================================
+FILE: .\backend\audit\verify.py
+==================================================
+from backend.audit.hash import compute_event_hash
+from backend.db import query
+
+
+def verificar_integridade_auditoria(conn):
+    """
+    Verifica a integridade da cadeia de auditoria.
+    Retorna dict com status e ponto de falha (se houver).
+    """
+
+    rows = query(
+        conn,
+        """
+        SELECT
+            id,
+            timestamp,
+            username,
+            role,
+            action,
+            resource,
+            resource_id,
+            payload_before,
+            payload_after,
+            endpoint,
+            method,
+            prev_hash,
+            event_hash
+        FROM auditoria
+        WHERE event_hash IS NOT NULL
+        ORDER BY id
+        """,
+        {},
+    )
+
+    prev_hash = None
+
+    for row in rows:
+        recalculated_hash = compute_event_hash(
+            timestamp=row["timestamp"],
+            username=row["username"],
+            role=row["role"],
+            action=row["action"],
+            resource=row["resource"],
+            resource_id=row["resource_id"],
+            payload_before=row["payload_before"],
+            payload_after=row["payload_after"],
+            endpoint=row["endpoint"],
+            method=row["method"],
+            prev_hash=prev_hash,
+        )
+
+        # 1️⃣ Hash do próprio evento foi adulterado
+        if recalculated_hash != row["event_hash"]:
+            return {
+                "valid": False,
+                "reason": "event_hash mismatch",
+                "broken_at_id": row["id"],
+                "expected": recalculated_hash,
+                "found": row["event_hash"],
+            }
+
+        # 2️⃣ Cadeia quebrada (prev_hash não bate)
+        if row["prev_hash"] != prev_hash:
+            return {
+                "valid": False,
+                "reason": "prev_hash mismatch",
+                "broken_at_id": row["id"],
+                "expected_prev_hash": prev_hash,
+                "found_prev_hash": row["prev_hash"],
+            }
+
+        prev_hash = row["event_hash"]
+
+    return {
+        "valid": True,
+        "checked_events": len(rows),
+    }
+
+
+==================================================
+FILE: .\backend\auth\dependencies.py
+==================================================
+import time
+from datetime import datetime, timezone
+
+from backend.core.logger import logger
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import OAuth2PasswordBearer
+from jose import ExpiredSignatureError, JWTError, jwt
+
+from backend.core.config import settings
+from backend.db import connect, query
+from backend.models import User, UserContext
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+# Cache simples em memória para evitar ir ao banco em toda requisição
+# Formato: {session_id: (timestamp, [rows])}
+_session_cache = {}
+SESSION_CACHE_TTL = 30  # segundos
+
+
+def get_current_user(
+    request: Request,
+    token: str = Depends(oauth2_scheme),
+):
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+        session_id = payload.get("sid")
+        username = payload.get("sub")
+        role = payload.get("role")
+
+        if not session_id or not username or not role:
+            raise HTTPException(status_code=401, detail="Token inválido")
+
+        # ⚡ Otimização: Cache de sessão
+        now = time.time()
+        cached = _session_cache.get(session_id)
+        rows = None
+
+        if cached:
+            ts, data = cached
+            if now - ts < SESSION_CACHE_TTL:
+                rows = data
+                if settings.ENV == "dev":
+                    logger.info(f"Cache de sessão usado para {username}")
+
+        if rows is None:
+            conn = connect()
+            try:
+                db_rows = query(
+                    conn,
+                    """
+                    SELECT
+                        s.revoked,
+                        s.expires_at,
+                        u.must_change_password,
+                        u.password_expires_at
+                      FROM user_sessions s
+                      JOIN users u ON u.username = s.username
+                     WHERE s.id = :id
+                    """,
+                    {"id": session_id},
+                )
+                # Converte para dict para garantir que seja serializável/desacoplado do cursor
+                rows = [dict(r) for r in db_rows]
+            finally:
+                conn.close()
+
+            # Atualiza cache
+            _session_cache[session_id] = (now, rows)
+
+        if not rows:
+            raise HTTPException(status_code=401)
+
+        session = rows[0]
+
+        # Sessão revogada
+        if session["revoked"]:
+            raise HTTPException(status_code=401)
+
+        # Access token expirou
+        if datetime.fromisoformat(session["expires_at"]) < datetime.now(timezone.utc):
+            raise HTTPException(status_code=401)
+
+        # 🔐 Expiração automática da senha (senha expirada por idade)
+        expiring_soon = False
+        days_remaining = None
+
+        password_expires_at = session["password_expires_at"]
+        if password_expires_at:
+            password_expires_datetime = datetime.fromisoformat(password_expires_at)
+            time_until_expiration = password_expires_datetime - datetime.now(timezone.utc)
+
+            if time_until_expiration.total_seconds() <= 0:
+                raise HTTPException(status_code=403, detail="PASSWORD_EXPIRED")
+
+            days_remaining = time_until_expiration.days
+
+            expiring_soon = days_remaining <= settings.PASSWORD_EXPIRATION_WARNING_DAYS
+
+        # must_change_password = 1
+        if session["must_change_password"]:
+            raise HTTPException(status_code=403, detail="PASSWORD_CHANGE_REQUIRED")
+
+        # return {"username": username, "role": role, "session_id": session_id}
+        user_context = UserContext(
+            username=username,
+            role=role,
+            session_id=session_id,
+            must_change_password=bool(session["must_change_password"]),
+            password_expiring_soon=expiring_soon,
+            password_days_remaining=days_remaining,
+        )
+
+        request.state.user = user_context
+        return user_context
+
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Erro ao decodificar o token")
+
+
+def get_current_user_profile(
+    user_context: UserContext = Depends(get_current_user),
+) -> User:
+    conn = connect()
+    try:
+        user_data = query(
+            conn,
+            "SELECT username, role, email, name, fullname, avatar_path FROM users WHERE username = :username",
+            {"username": user_context.username},
+        )
+        if not user_data:
+            raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+        return User(**user_data[0])
+    finally:
+        conn.close()
+
+
+def get_current_user_allow_password_change(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+    except ExpiredSignatureError:
+        # 🔑 Access token expirou → frontend tentará refresh
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="TOKEN_EXPIRED",
+        )
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="INVALID_TOKEN",
+        )
+
+    return UserContext(
+        username=payload.get("sub"),
+        role=payload.get("role"),
+        session_id=payload.get("sid"),
+        must_change_password=True,
+    )
+
+
+==================================================
+FILE: .\backend\auth\jwt.py
+==================================================
+from datetime import datetime, timedelta, timezone
+
+from fastapi import Depends, HTTPException
+from fastapi.security import OAuth2PasswordBearer
+from jose import ExpiredSignatureError, JWTError, jwt
+
+from backend.core.config import settings
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+
+def create_token(payload: dict, expires_delta: timedelta):
+    to_encode = payload.copy()
+    to_encode["exp"] = datetime.now(timezone.utc) + expires_delta
+    return jwt.encode(to_encode, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+
+
+def decode_token(token: str = Depends(oauth2_scheme)) -> dict:
+    try:
+        return jwt.decode(
+            token,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+    except ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="TOKEN_EXPIRED")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="TOKEN_INVALID")
+
+
+==================================================
+FILE: .\backend\auth\passwords.py
+==================================================
+from passlib.context import CryptContext
+
+_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def hash_password(password: str) -> str:
+    """
+    Gera hash seguro (bcrypt) para senha em texto plano.
+    """
+    return _pwd_context.hash(password)
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    """
+    Verifica se a senha informada corresponde ao hash armazenado.
+    """
+    return _pwd_context.verify(password, password_hash)
+
+
+==================================================
+FILE: .\backend\auth\permissions.py
+==================================================
+from fastapi import HTTPException, status
+
+from backend.models import UserContext
+
+
+def require_role(*allowed_roles: str):
+    def checker(user: UserContext):
+        if user.role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Permissão insuficiente",
+            )
+
+    return checker
+
+
+==================================================
+FILE: .\backend\auth\service.py
+==================================================
+import uuid
+from datetime import datetime, timezone
+
+from backend.core.logger import logger
+from fastapi import HTTPException
+
+from backend.auth.jwt import create_token
+from backend.core.config import ACCESS_TOKEN_EXPIRE, REFRESH_TOKEN_EXPIRE, settings
+from backend.db import connect, execute, query
+
+
+def login_user(username: str, role: str):
+    session_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+
+    conn = connect()
+    try:
+        # 1️⃣ Buscar versão da senha
+        rows = query(
+            conn,
+            """
+            SELECT password_changed_at, password_expires_at
+            FROM users
+            WHERE username = :username
+            """,
+            {"username": username},
+        )
+
+        if not rows:
+            raise HTTPException(status_code=401, detail="Usuário inválido")
+
+        if rows[0]["password_expires_at"]:
+            expires_at = datetime.fromisoformat(rows[0]["password_expires_at"])
+            if expires_at < datetime.now(timezone.utc):
+                raise HTTPException(status_code=403, detail="PASSWORD_EXPIRED")
+
+        password_changed_at = rows[0]["password_changed_at"]
+
+        # 2️⃣ Criar sessão
+        execute(
+            conn,
+            """
+            INSERT INTO user_sessions
+            (id, username, role, created_at, expires_at)
+            VALUES (:id, :username, :role, :created_at, :expires_at)
+            """,
+            {
+                "id": session_id,
+                "username": username,
+                "role": role,
+                "created_at": now.isoformat(),
+                "expires_at": (now + REFRESH_TOKEN_EXPIRE).isoformat(),
+            },
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # 3️⃣ Criar tokens
+    access_token = create_token(
+        {
+            "sub": username,
+            "role": role,
+            "sid": session_id,
+            "pwd": password_changed_at,  # 🔑 versão da senha
+        },
+        ACCESS_TOKEN_EXPIRE,
+    )
+
+    refresh_token = create_token(
+        {
+            "sub": username,
+            "sid": session_id,
+            "type": "refresh",
+            "pwd": password_changed_at,
+        },
+        REFRESH_TOKEN_EXPIRE,
+    )
+
+    return access_token, refresh_token
+
+
+def logout_session(session_id: str):
+    conn = connect()
+    try:
+        execute(
+            conn,
+            """
+            UPDATE user_sessions
+               SET revoked = 1
+             WHERE id = :id
+            """,
+            {"id": session_id},
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def issue_new_access_token(payload: dict) -> dict:
+    session_id = payload.get("sid")
+    username = payload.get("sub")
+    pwd_token = payload.get("pwd")
+
+    if not session_id or not username or not pwd_token:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+    conn = connect()
+    try:
+        now = datetime.now(timezone.utc)
+
+        # 1️⃣ Validar sessão atual
+        session_rows = query(
+            conn,
+            """
+            SELECT revoked, expires_at, role
+              FROM user_sessions
+             WHERE id = :id
+            """,
+            {"id": session_id},
+        )
+
+        if not session_rows:
+            raise HTTPException(status_code=401)
+
+        session = session_rows[0]
+
+        if session["revoked"]:
+            raise HTTPException(status_code=401)
+
+        # expires_at = datetime.fromisoformat(session["expires_at"])
+        # if expires_at < now:
+        #     raise HTTPException(status_code=401)
+
+        # 2️⃣ Buscar versão atual da senha
+        user_rows = query(
+            conn,
+            """
+            SELECT password_changed_at
+            FROM users
+            WHERE username = :username
+            """,
+            {"username": username},
+        )
+
+        if not user_rows:
+            raise HTTPException(status_code=401, detail="Usuário inválido")
+
+        pwd_db = user_rows[0]["password_changed_at"]
+
+        # 3️⃣ Comparar versões
+        if pwd_token != pwd_db:
+            raise HTTPException(status_code=401, detail="PASSWORD_CHANGE")
+
+        # 🔁 4️⃣ ROTACIONAR SESSÃO
+        # 4.1 Revogar sessão atual
+        execute(
+            conn,
+            """
+            UPDATE user_sessions
+               SET revoked = 1
+             WHERE id = :id
+            """,
+            {"id": session_id},
+        )
+
+        # 4.2 Criar nova sessão
+        new_session_id = str(uuid.uuid4())
+        new_expires_at = now + REFRESH_TOKEN_EXPIRE
+        execute(
+            conn,
+            """
+            INSERT INTO user_sessions
+                (id, username, role, created_at, expires_at, revoked)
+            VALUES
+                (:id, :username, :role, :created_at, :expires_at, 0)
+            """,
+            {
+                "id": new_session_id,
+                "username": username,
+                "role": session["role"],
+                "created_at": now.isoformat(),
+                "expires_at": new_expires_at.isoformat(),
+            },
+        )
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        # ⚠️ Apenas em desenvolvimento, retorna o token no response
+        if settings.ENV == "dev":
+            logger.warning(f"Erro ao tentar REFRESH da sessão do usuário: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao tentar REFRESH da sessão do usuário")
+    finally:
+        conn.close()
+
+    # 🔐 5️⃣ Emitir NOVOS tokens com novo sid
+    new_access_token = create_token(
+        {
+            "sub": username,
+            "role": session["role"],
+            "sid": new_session_id,
+            "pwd": pwd_db,  # 🔑 sempre a versão atual
+        },
+        ACCESS_TOKEN_EXPIRE,
+    )
+
+    new_refresh_token = create_token(
+        {
+            "sub": username,
+            "sid": new_session_id,
+            "type": "refresh",
+            "pwd": pwd_db,  # 🔐 importante para manter coerência
+        },
+        REFRESH_TOKEN_EXPIRE,
+    )
+
+    return {
+        "access_token": new_access_token,
+        "refresh_token": new_refresh_token,
+    }
+
+
+def revoke_all_sessions(username: str, conn=None):
+    """
+    Revoga todas as sessões ativas de um usuário.
+    """
+
+    if not username:
+        raise HTTPException(status_code=400, detail="Username obrigatório")
+
+    ows_connection = False
+    if conn is None:
+        ows_connection = True
+        conn = connect()
+
+    try:
+        execute(
+            conn,
+            """
+            UPDATE user_sessions
+               SET revoked = 1
+             WHERE username = :username
+               AND revoked = 0
+            """,
+            {"username": username},
+        )
+
+        if ows_connection:
+            conn.commit()
+    except Exception:
+        if ows_connection:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail="Erro ao revogar sessões do usuário")
+    finally:
+        if ows_connection:
+            conn.close()
+
+
+def revoke_session_by_id(session_id: str):
+    conn = connect()
+    try:
+        execute(
+            conn,
+            """
+            UPDATE user_sessions
+               SET revoked = 1
+             WHERE id = :id
+            """,
+            {"id": session_id},
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def cleanup_expired_sessions() -> int:
+    conn = connect()
+    try:
+        cur = execute(
+            conn,
+            """
+            DELETE FROM user_sessions
+             WHERE expires_at < :now
+            """,
+            {"now": datetime.now(timezone.utc).isoformat()},
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def cleanup_revoked_sessions() -> int:
+    conn = connect()
+    try:
+        cur = execute(
+            conn,
+            """
+            DELETE FROM user_sessions
+             WHERE revoked = 1
+            """,
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+==================================================
+FILE: .\backend\core\config.py
+==================================================
+from datetime import timedelta
+
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    # Ambiente
+    ENV: str = "dev"
+
+    # JWT
+    JWT_SECRET: str
+    JWT_ALGORITHM: str = "HS256"
+
+    API_BASE_URL: str = "http://localhost:8000"
+
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # Database
+    DB_BACKEND: str = "sqlite"
+    DB_DSN: str
+
+    # User Password Managment
+    PASSWORD_VALIDITY_DAYS: int = 30
+    PASSWORD_EXPIRATION_WARNING_DAYS: int = 7
+
+    SMTP_HOST: str
+    SMTP_PORT: int
+    SMTP_USER: str
+    SMTP_PASSWORD: str
+    EMAIL_FROM: str
+    FRONTEND_URL: str
+
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+
+
+settings = Settings()
+
+# Derived helpers
+ACCESS_TOKEN_EXPIRE = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+REFRESH_TOKEN_EXPIRE = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+
+
+==================================================
+FILE: .\backend\core\exceptions.py
+==================================================
+from logging import Logger
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import HTTPException as FastAPIHTTPException
+from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
+
+from backend.core.config import settings
+
+
+def register_exception_handlers(app: FastAPI, logger: Logger):
+    @app.exception_handler(FastAPIHTTPException)
+    async def custom_http_exception_handler(request: Request, exc: FastAPIHTTPException):
+        # 🔎 Apenas em ambiente de desenvolvimento
+        if settings.ENV == "dev" and exc.status_code == 401:
+            logger.warning(f"401 em {request.method} {request.url.path} - detail={exc.detail}")
+
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+        )
+
+
+def register_rate_limit_exception(app: FastAPI):
+    @app.exception_handler(RateLimitExceeded)
+    async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "RATE_LIMIT_EXCEEDED"},
+        )
+
+
+==================================================
+FILE: .\backend\core\logger.py
+==================================================
+import logging
+import sys
+
+# Configuração centralizada do logger de autenticação
+logger = logging.getLogger("auth-debug")
+logger.setLevel(logging.INFO)
+
+# Garante que o handler seja adicionado apenas uma vez
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    logger.addHandler(handler)
+
+
+==================================================
+FILE: .\backend\db\errors.py
+==================================================
+class DBError(Exception):
+    """Erro genérico de banco independente de SGBD."""
+
+
+class DuplicateKeyError(DBError):
+    """Violação de chave única/índice UNIQUE."""
+
+
+class ForeignKeyError(DBError):
+    """Violação de chave estrangeira."""
+
+
+class NotFoundError(DBError):
+    """Registro não encontrado (uso opcional no CRUD)."""
+
+
+==================================================
+FILE: .\backend\db\postgres_adapter.py
+==================================================
+# backend/db/postgres_adapter.py
+from __future__ import annotations
+
+from typing import Any, Dict
+
+from .errors import DBError, DuplicateKeyError, ForeignKeyError
+
+try:
+    import psycopg  # psycopg3
+except Exception:  # pragma: no cover
+    psycopg = None
+
+
+def connect(dsn: str | None = None):
+    if psycopg is None:
+        raise RuntimeError("psycopg não instalado. pip install psycopg[binary]")
+    return psycopg.connect(dsn)
+
+
+def execute(conn, sql: str, params: Dict[str, Any] | None = None):
+    # Em psycopg, placeholder é %s; se você mantiver :nome,
+    # pode usar psycopg.sql ou mapear para %s + tupla.
+    # Para simplificar, psycopg aceita dict com %(nome)s se você formatar.
+    # Implementar conversão aqui quando for migrar de fato.
+    cur = conn.cursor()
+    cur.execute(sql, params or None)
+    return cur
+
+
+def executemany(conn, sql: str, seq_of_params):
+    cur = conn.cursor()
+    cur.executemany(sql, seq_of_params)
+    return cur
+
+
+def query(conn, sql: str, params: Dict[str, Any] | None = None):
+    cur = execute(conn, sql, params)
+    return cur.fetchall()
+
+
+def normalize_error(exc: Exception) -> DBError:
+    # from psycopg import errors
+    try:
+        from psycopg import errors
+
+        if isinstance(exc, errors.UniqueViolation):
+            return DuplicateKeyError(str(exc))
+        if isinstance(exc, errors.ForeignKeyViolation):
+            return ForeignKeyError(str(exc))
+    except Exception:
+        pass
+    return DBError(str(exc))
+
+
+==================================================
+FILE: .\backend\db\sqlite_adapter.py
+==================================================
+from __future__ import annotations
+
+import re
+import sqlite3
+from pathlib import Path
+from typing import Any, Dict, Iterable, Sequence, Tuple
+
+from .errors import DBError, DuplicateKeyError, ForeignKeyError
+
+# Caminho padrão do seu projeto: <repo>/data/dados.db
+_DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "dados.db"
+
+
+def connect(dsn: str | None = None) -> sqlite3.Connection:
+    db_path = Path(dsn) if dsn else _DEFAULT_DB_PATH
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    # Opcional: melhor compatibilidade com dicts/tuplas
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+# --- Placeholder conversion: from ":name" to "?" (qmark) ---
+_named_re = re.compile(r":([a-zA-Z_][a-zA-Z0-9_]*)")
+
+
+def _compile_sql(sql: str, params: Dict[str, Any] | None) -> Tuple[str, Sequence[Any] | None]:
+    if not params:
+        return sql, None
+    order: list[str] = _named_re.findall(sql)  # ordem de ocorrência
+    compiled_sql = _named_re.sub("?", sql)
+    compiled_params = [params[name] for name in order]
+    return compiled_sql, compiled_params
+
+
+def execute(conn, sql: str, params: Dict[str, Any] | None = None):
+    sql2, p2 = _compile_sql(sql, params)
+    cur = conn.cursor()
+    cur.execute(sql2, p2 or [])
+    return cur
+
+
+def executemany(conn, sql: str, seq_of_params: Iterable[Dict[str, Any]]):
+    cur = conn.cursor()
+    for p in seq_of_params:
+        sql2, p2 = _compile_sql(sql, p)
+        cur.execute(sql2, p2 or [])
+    return cur
+
+
+def query(conn, sql: str, params: Dict[str, Any] | None = None):
+    cur = execute(conn, sql, params)
+    return cur.fetchall()
+
+
+def normalize_error(exc: Exception) -> DBError:
+    # sqlite3.IntegrityError cobre UNIQUE, FK etc.
+    if isinstance(exc, sqlite3.IntegrityError):
+        msg = str(exc).lower()
+        if "unique" in msg:
+            return DuplicateKeyError(str(exc))
+        if "foreign key" in msg:
+            return ForeignKeyError(str(exc))
+    return DBError(str(exc))
+
+
+==================================================
+FILE: .\backend\db\__init__.py
+==================================================
+from backend.core.config import settings
+
+_BACKEND = settings.DB_BACKEND
+_DSN = settings.DB_DSN
+
+if _BACKEND == "sqlite":
+    from . import sqlite_adapter as _adapter
+else:
+    from . import postgres_adapter as _adapter
+
+connect = _adapter.connect
+execute = _adapter.execute
+executemany = _adapter.executemany
+query = _adapter.query
+normalize_error = _adapter.normalize_error
+
+
+def backend_name() -> str:
+    return _BACKEND
+
+
+def dsn() -> str | None:
+    return _DSN
+
+
+==================================================
+FILE: .\backend\notifications\email_service.py
+==================================================
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+from backend.core.config import settings
+
+
+def send_email(to_email: str, subject: str, html_content: str):
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = to_email
+
+    part = MIMEText(html_content, "html")
+    msg.attach(part)
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+
+
+==================================================
+FILE: .\backend\notifications\templates.py
+==================================================
+def reset_password_template(reset_link: str) -> str:
+    return f"""
+    <html>
+        <body style="font-family: Arial, sans-serif; background-color: #f4f6f8; padding: 20px;">
+            <div style="max-width: 600px; margin: auto; background: white; padding: 30px; border-radius: 8px;">
+                <h2 style="color: #1f2937;">Redefinição de Senha</h2>
+                <p>Você solicitou a redefinição de sua senha.</p>
+                <p>Clique no botão abaixo:</p>
+
+                <a href="{reset_link}"
+                   style="display: inline-block; padding: 12px 20px; background-color: #2563eb; color: white; text-decoration: none; border-radius: 6px;">
+                   Redefinir Senha
+                </a>
+
+                <p style="margin-top: 20px; font-size: 12px; color: #6b7280;">
+                    Este link expira em 30 minutos.
+                </p>
+            </div>
+        </body>
+    </html>
+    """
+
+
+==================================================
+FILE: .\backend\users\admin.py
+==================================================
+from fastapi import APIRouter, Depends, HTTPException
+
+from backend.audit.service import registrar_evento
+from backend.auth.dependencies import get_current_user, get_current_user_allow_password_change
+from backend.auth.permissions import require_role
+from backend.auth.service import login_user
+from backend.db import connect, execute, query
+from backend.users.password_reset_service import limpar_tokens_reset_expirados_ou_usados
+from backend.users.schemas import ChangePasswordIn
+from backend.users.service import alterar_senha, resetar_senha_admin
+
+router = APIRouter(prefix="/admin", tags=["Admin"])
+
+
+@router.get("/users")
+def listar_usuarios(user=Depends(get_current_user)):
+    require_role("admin")(user)
+    conn = connect()
+    try:
+        rows = query(
+            conn,
+            """
+            SELECT id, username, role, created_at
+              FROM users
+             ORDER BY username
+            """,
+            {},
+        )
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+@router.get("/users/{username}/check")
+def check_user(username: str, user=Depends(get_current_user)):
+    return {
+        "username": user.username,
+        "role": user.role,
+        "must_change_password": bool(user.must_change_password),
+        "password_expiring_soon": bool(user.password_expiring_soon),
+        "password_days_remaining": int(user.password_days_remaining),
+    }
+
+
+@router.post("/users/{username}/reset-password")
+def reset_password(username: str, user=Depends(get_current_user)):
+    require_role("admin")(user)
+    nova_senha = resetar_senha_admin(username, user)
+
+    return {
+        "username": username,
+        "temporary_password": nova_senha,
+        "warning": "Copie a senha agora. Ela não será exibida novamente.",
+    }
+
+
+@router.post("/password-reset/cleanup")
+def cleanup_password_reset_tokens(user=Depends(get_current_user)):
+    require_role("admin")(user)
+    deleted = limpar_tokens_reset_expirados_ou_usados()
+    return {
+        "deleted_tokens": deleted,
+        "message": "Tokens expirados/usados removidos com sucesso",
+    }
+
+
+@router.post("/change-password")
+def change_password(
+    payload: ChangePasswordIn, user=Depends(get_current_user_allow_password_change)
+):
+    try:
+        alterar_senha(
+            username=user.username,
+            senha_atual=payload.old_password,
+            nova_senha=payload.new_password,
+        )
+
+        # # 🔐 cria nova sessão (zera contexto antigo)
+        # access_token, refresh_token = login_user(
+        #     user.username,
+        #     user.role,
+        # )
+
+        registrar_evento(
+            username=user.username,
+            role=user.role,
+            action="CHANGE_PASSWORD",
+            resource="users",
+            resource_id=None,
+            payload_before=None,
+            payload_after=None,
+            endpoint="/change-password",
+            method="POST",
+        )
+
+        return {"message": "Senha alterada com sucesso"}
+        # return {
+        #     "access_token": access_token,
+        #     "refresh_token": refresh_token,
+        #     "user": {
+        #         "username": user.username,
+        #         "role": user.role,
+        #     },
+        # }
+
+    except HTTPException as exc:
+        # ⚠️ Erros de negócio esperados (senha inválida, política, etc)
+        raise exc
+    except Exception:
+        # 🔥 Erros inesperados
+        raise HTTPException(
+            status_code=500,
+            detail="Erro interno ao alterar senha",
+        )
+
+
+@router.put("/users/{username}/email")
+def update_user_email(
+    username: str,
+    payload: dict,
+    admin=Depends(get_current_user),
+):
+    require_role("admin")(admin)
+
+    new_email = payload.get("email")
+    if not new_email:
+        raise HTTPException(status_code=400, detail="Email obrigatório")
+
+    conn = connect()
+    try:
+        # valida se já existe
+        existing_user = query(
+            conn,
+            """
+            SELECT 1
+              FROM users
+             WHERE username != :username
+               AND email = :email
+            """,
+            {"username": username, "email": new_email},
+        )
+        if existing_user:
+            raise HTTPException(status_code=400, detail="EMAIL_ALREADY_IN_USE")
+
+        execute(
+            conn,
+            """
+            UPDATE users
+               SET email = :email
+             WHERE username = :username
+            """,
+            {"username": username, "email": new_email},
+        )
+
+        conn.commit()
+
+        return {"message": "Email atualizado com sucesso"}
+    except Exception as exc:
+        conn.rollback()
+        raise exc
+    finally:
+        conn.close()
+
+
+==================================================
+FILE: .\backend\users\bootstrap.py
+==================================================
+from datetime import datetime, timezone
+
+from backend.auth.passwords import hash_password
+from backend.db import connect, execute
+
+USERS = [
+    ("admin", "admin", "admin", "email01@test.com"),
+    ("editor", "editor", "editor", "email02@test.com"),
+    ("leitor", "leitor", "leitor", "email03@test.com"),
+]
+
+
+def create_inicial_users():
+    conn = connect()
+    try:
+        for username, password, role, email in USERS:
+            execute(
+                conn,
+                """
+                INSERT OR IGNORE INTO users
+                    (username, password_hash, role, email, created_at)
+                VALUES
+                    (:username, :password_hash, :role, :email, :created_at)
+                """,
+                {
+                    "username": username,
+                    "password_hash": hash_password(password),
+                    "role": role,
+                    "email": email,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            conn.commit()
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    create_inicial_users()
+    print("Usuários iniciais criados com sucesso.")
+
+
+==================================================
+FILE: .\backend\users\models.py
+==================================================
+from pydantic import BaseModel
+
+
+class ForgotPasswordIn(BaseModel):
+    username: str
+
+
+class ResetPasswordIn(BaseModel):
+    token: str
+    new_password: str
+
+
+==================================================
+FILE: .\backend\users\password_reset_service.py
+==================================================
+import hashlib
+import hmac
+import secrets
+from datetime import datetime, timedelta, timezone
+
+from fastapi import HTTPException
+
+from backend.auth.service import revoke_all_sessions
+from backend.core.config import settings
+from backend.db import connect, execute, query
+
+
+def gerar_token_reset_senha(*, username: str, validade_minutos: int = 30) -> str:
+    """
+    Gera token temporário de reset de senha.
+    Retorna o token PURO (para envio por e-mail).
+    """
+
+    # token imprevísivel (URL-safe)
+    token = secrets.token_urlsafe(32)
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(minutes=validade_minutos)
+
+    conn = connect()
+    try:
+        execute(
+            conn,
+            """
+            INSERT INTO password_reset_tokens (
+                username,
+                token_hash,
+                created_at,
+                expires_at
+            )
+            VALUES (
+                :username,
+                :token_hash,
+                :created_at,
+                :expires_at
+            )
+            """,
+            {
+                "username": username,
+                "token_hash": token_hash,
+                "created_at": now.isoformat(),
+                "expires_at": expires_at.isoformat(),
+            },
+        )
+
+        revoke_all_sessions(username, conn=conn)
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    # ⚠️ SOMENTE o token puro sai daqui
+    return token
+
+
+def validar_token_reset_senha(*, token: str) -> str:
+    """
+    Valida token de reset.
+    Retorna username se válido.
+    """
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+    now = datetime.now(timezone.utc)
+
+    conn = connect()
+    try:
+        rows = query(
+            conn,
+            """
+            SELECT
+              id, username, expires_at, used_at
+            FROM password_reset_tokens
+            WHERE token_hash = :token_hash
+            """,
+            {"token_hash": token_hash},
+        )
+
+        if not rows:
+            raise HTTPException(status_code=400, detail="Token inválido")
+
+        row = rows[0]
+
+        if row["used_at"] is not None:
+            raise HTTPException(status_code=400, detail="Token já utilizado")
+
+        if now > datetime.fromisoformat(row["expires_at"]):
+            raise HTTPException(status_code=400, detail="Token expirado")
+
+        return row["username"]
+    finally:
+        conn.close()
+
+
+def assinar_token_reset(token: str) -> str:
+    """
+    Assina o token com HMAC usando JWT_SECRET.
+    Retorna token + assinatura concatenados.
+    """
+    signature = hmac.new(
+        settings.JWT_SECRET.encode(),
+        token.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+    return f"{token}.{signature}"
+
+
+def validar_assinatura_token(token_assinado: str) -> str:
+    """
+    Separa token e assinatura.
+    Valida integridade.
+    Retorna token puro se válido.
+    """
+    try:
+        token, signature = token_assinado.split(".")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Token inválido")
+
+    expected_signature = hmac.new(
+        settings.JWT_SECRET.encode(),
+        token.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(signature, expected_signature):
+        raise HTTPException(status_code=400, detail="Token inválido")
+
+    return token
+
+
+def marcar_token_como_usado(*, token: str):
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    now = datetime.now(timezone.utc)
+
+    conn = connect()
+    try:
+        execute(
+            conn,
+            """
+            UPDATE password_reset_tokens
+               SET used_at = :used_at
+             WHERE token_hash = :token_hash
+            """,
+            {
+                "used_at": now.isoformat(),
+                "token_hash": token_hash,
+            },
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def limpar_tokens_reset_expirados_ou_usados() -> int:
+    """
+    Remove tokens expirados ou já utilizados.
+    Retorna a quantidade removida.
+    """
+    conn = connect()
+    try:
+        cur = execute(
+            conn,
+            """
+            DELETE FROM password_reset_tokens
+             WHERE used_at IS NOT NULL
+                OR expires_at <= CURRENT_TIMESTAMP
+            """,
+            {},
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+==================================================
+FILE: .\backend\users\schemas.py
+==================================================
+from pydantic import BaseModel
+
+
+class ChangePasswordIn(BaseModel):
+    old_password: str
+    new_password: str
+
+
+class UserProfileUpdate(BaseModel):
+    email: str
+    name: str
+    fullname: str
+
+
+==================================================
+FILE: .\backend\users\service.py
+==================================================
+import re
+import secrets
+import string
+from datetime import datetime, timedelta, timezone
+
+from fastapi import HTTPException
+
+from backend.audit.service import registrar_evento
+from backend.auth.passwords import hash_password, verify_password
+from backend.auth.service import revoke_all_sessions
+from backend.core.config import settings
+from backend.db import connect, execute, query
+from backend.models import UserContext
+
+
+def authenticate_user(username: str, password: str):
+    conn = connect()
+    try:
+        rows = query(
+            conn,
+            """
+            SELECT username, password_hash, role, is_active, must_change_password, password_expires_at,
+                   email, name, fullname, avatar_path
+              FROM users
+             WHERE username = :username
+            """,
+            {"username": username},
+        )
+    finally:
+        conn.close()
+
+    if not rows:
+        return None
+
+    user = rows[0]
+
+    if not user["is_active"]:
+        return None
+
+    if not verify_password(password, user["password_hash"]):
+        return None
+
+    expiring_soon = False
+    days_remaining = None
+
+    password_expires_at = user["password_expires_at"]
+    if password_expires_at:
+        password_expires_datetime = datetime.fromisoformat(password_expires_at)
+        time_until_expiration = password_expires_datetime - datetime.now(timezone.utc)
+
+        days_remaining = time_until_expiration.days
+
+        if days_remaining <= settings.PASSWORD_EXPIRATION_WARNING_DAYS:
+            expiring_soon = True
+
+    return {
+        "username": user["username"],
+        "role": user["role"],
+        "email": user["email"],
+        "name": user["name"],
+        "fullname": user["fullname"],
+        "avatar_path": user["avatar_path"],
+        "must_change_password": bool(user["must_change_password"]),
+        "password_expiring_soon": expiring_soon,
+        "password_days_remaining": days_remaining,
+    }
+
+
+def validar_senha(password: str):
+    if len(password) < 6:
+        raise ValueError("Senha deve ter no mínimo 6 caracteres")
+
+    if not re.search(r"[A-Z]", password):
+        raise ValueError("Senha deve conter letra maiúscula")
+
+    if not re.search(r"[a-z]", password):
+        raise ValueError("Senha deve conter letra minúscula")
+
+    if not re.search(r"\d", password):
+        raise ValueError("Senha deve conter número")
+
+    if not re.search(r"[^\w\s]", password):
+        raise ValueError("Senha deve conter caractere especial")
+
+
+def gerar_senha_temporaria(tamanho: int = 6) -> str:
+    minusculas = string.ascii_lowercase
+    maiusculas = string.ascii_uppercase
+    numeros = string.digits
+    caracteres_especiais = string.punctuation
+
+    # 1️⃣ garante 1 de cada
+    senha = [
+        secrets.choice(minusculas),
+        secrets.choice(maiusculas),
+        secrets.choice(numeros),
+        secrets.choice(caracteres_especiais),
+    ]
+
+    # 2️⃣ completa o resto
+    todos = minusculas + maiusculas + numeros + caracteres_especiais
+    senha += [secrets.choice(todos) for _ in range(2)]
+
+    # 3️⃣ embaralha
+    secrets.SystemRandom().shuffle(senha)
+    return "".join(senha)
+
+
+def resetar_senha_admin(username: str, admin_user: UserContext):
+    # gera senha temporária
+    nova_senha = gerar_senha_temporaria()
+
+    # valida senha temporária
+    validar_senha(nova_senha)
+
+    conn = connect()
+    try:
+        # 🔐 Atualiza senha
+        execute(
+            conn,
+            """
+            UPDATE users
+               SET password_hash = :hash,
+                   must_change_password = 1
+             WHERE username = :username
+            """,
+            {
+                "hash": hash_password(nova_senha),
+                "username": username,
+            },
+        )
+
+        revoke_all_sessions(username, conn=conn)
+
+        # 🧾 Auditoria (MESMA conexão)
+        registrar_evento(
+            conn=conn,
+            username=admin_user.username,
+            role=admin_user.role,
+            action="RESET_PASSWORD_ADMIN",
+            resource="users/admin",
+            resource_id=None,
+            payload_before={"username": username},
+            payload_after=None,
+            endpoint="/admin/users/reset-password",
+            method="POST",
+        )
+
+        conn.commit()
+        return nova_senha
+    except Exception as exc:
+        conn.rollback()
+        raise exc
+    finally:
+        conn.close()
+
+
+def alterar_senha(*, username: str, senha_atual: str, nova_senha: str):
+    try:
+        validar_senha(nova_senha)
+    except ValueError as exc:
+        # ❌ Política de senha
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    conn = connect()
+    try:
+        rows = query(
+            conn,
+            """
+            SELECT password_hash
+              FROM users
+             WHERE username = :username
+            """,
+            {"username": username},
+        )
+
+        if not rows:
+            raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+        password_hash = rows[0]["password_hash"]
+
+        if not verify_password(senha_atual, password_hash):
+            raise HTTPException(status_code=400, detail="Senha atual inválida")
+
+        execute(
+            conn,
+            """
+            UPDATE users
+               SET password_hash = :password_hash,
+                   must_change_password = 0,
+                   password_changed_at = :changed_at,
+                   password_expires_at = :expires_at
+             WHERE username = :username
+            """,
+            {
+                "password_hash": hash_password(nova_senha),
+                "username": username,
+                "changed_at": datetime.now(timezone.utc).isoformat(),
+                "expires_at": (
+                    datetime.now(timezone.utc) + timedelta(days=settings.PASSWORD_VALIDITY_DAYS)
+                ).isoformat(),
+            },
+        )
+
+        revoke_all_sessions(username, conn=conn)
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def resetar_senha_por_token(*, username: str, nova_senha: str):
+    """
+    Reseta a senha sem exigir a senha atual (uso com token válido).
+    """
+    try:
+        validar_senha(nova_senha)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    conn = connect()
+    try:
+        rows = query(
+            conn,
+            """
+            SELECT password_hash
+              FROM users
+             WHERE username = :username
+               AND is_active = 1
+            """,
+            {"username": username},
+        )
+
+        if not rows:
+            raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+        execute(
+            conn,
+            """
+            UPDATE users
+               SET password_hash = :password_hash,
+                   must_change_password = 0,
+                   password_changed_at = :changed_at,
+                   password_expires_at = :expires_at
+             WHERE username = :username
+            """,
+            {
+                "password_hash": hash_password(nova_senha),
+                "username": username,
+                "changed_at": datetime.now(timezone.utc).isoformat(),
+                "expires_at": (
+                    datetime.now(timezone.utc) + timedelta(days=settings.PASSWORD_VALIDITY_DAYS)
+                ).isoformat(),
+            },
+        )
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
+==================================================
+FILE: .\backend\users\users.py
+==================================================
+import shutil
+from pathlib import Path
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+
+from backend.audit.service import registrar_evento
+from backend.auth.dependencies import get_current_user, get_current_user_profile
+from backend.auth.service import revoke_all_sessions
+from backend.core.config import settings
+from backend.core.logger import logger
+from backend.db import connect, execute, query
+from backend.models import User, UserContext
+from backend.notifications.email_service import send_email
+from backend.notifications.templates import reset_password_template
+from backend.users.models import ForgotPasswordIn, ResetPasswordIn
+from backend.users.password_reset_service import (
+    assinar_token_reset,
+    gerar_token_reset_senha,
+    marcar_token_como_usado,
+    validar_assinatura_token,
+    validar_token_reset_senha,
+)
+from backend.users.schemas import UserProfileUpdate
+from backend.users.service import resetar_senha_por_token
+
+router = APIRouter(tags=["Users"])
+
+
+def _send_email_safe(to: str, subject: str, html: str):
+    try:
+        send_email(to, subject, html)
+    except Exception as exc:
+        # Em dev, é comum o email falhar se for fake. Apenas logamos o aviso.
+        logger.warning(f"Falha ao enviar e-mail para {to}: {exc}")
+
+
+@router.post("/forgot-password")
+def forgot_password(payload: ForgotPasswordIn, background_tasks: BackgroundTasks):
+    """
+    Gera token de reset de senha.
+    Em produção, o token deve ser enviado por e-mail.
+    """
+    username = payload.username.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username obrigatório")
+
+    try:
+        logger.info("Forgot-password solicitado")
+        conn = connect()
+        try:
+            rows = query(
+                conn,
+                """
+                SELECT email
+                  FROM users
+                 WHERE username = :username
+                   AND is_active = 1
+                """,
+                {"username": username},
+            )
+        finally:
+            conn.close()
+
+        token = None
+        signed_token = None
+
+        if rows:
+            logger.info("Usuário ativo encontrado para reset de senha")
+
+            email = rows[0]["email"]
+
+            # 1️⃣ Gerar token puro
+            token = gerar_token_reset_senha(username=username)
+
+            # 2️⃣ Assinar token
+            signed_token = assinar_token_reset(token)
+
+            # 3️⃣ Criar link
+            reset_link = f"{settings.FRONTEND_URL}?token={signed_token}"
+
+            # 4️⃣ Criar HTML
+            html_content = reset_password_template(reset_link)
+
+            # 5️⃣ Enviar e-mail em background
+            if email:
+                background_tasks.add_task(
+                    _send_email_safe,
+                    email,
+                    "Redefinição de senha",
+                    html_content,
+                )
+            else:
+                logger.warning(
+                    f"Usuário {username} solicitou reset mas não possui e-mail cadastrado."
+                )
+        else:
+            logger.info("Usuário não encontrado ou inativo para reset de senha")
+
+        registrar_evento(
+            username=username,
+            role="system",
+            action="FORGOT_PASSWORD",
+            resource="users",
+            resource_id=None,
+            payload_before=None,
+            payload_after=None,
+            endpoint="/forgot-password",
+            method="POST",
+        )
+
+        # 200 genérico para não revelar se o usuário existe
+        response = {
+            "message": "Se o usuário existir, você receberá instruções para redefinir a senha."
+        }
+
+        # ⚠️ Apenas em desenvolvimento, retorna o token no response
+        if settings.ENV == "dev" and signed_token:
+            response["reset_token"] = signed_token
+            logger.warning(f"Token de reset: {signed_token}")
+
+        return response
+
+    except HTTPException:
+        logger.warning("Erro de validação ao solicitar reset de senha", exc_info=True)
+        raise
+    except Exception:
+        logger.exception("Erro inesperado no fluxo de forgot-password")
+        raise HTTPException(
+            status_code=500,
+            detail="Erro interno ao solicitar redefinição de senha",
+        )
+
+
+@router.post("/reset-password")
+def reset_password(payload: ResetPasswordIn):
+    """
+    Reseta senha usando token.
+    """
+    try:
+        logger.info("Reset-password solicitado")
+
+        # 1️⃣ Validar assinatura primeiro
+        token_puro = validar_assinatura_token(payload.token)
+
+        # 2️⃣ Validar token no banco
+        username = validar_token_reset_senha(token=token_puro)
+
+        # 3️⃣ Alterar senha (aplica política)
+        resetar_senha_por_token(username=username, nova_senha=payload.new_password)
+
+        # 4️⃣ Marcar token como usado
+        marcar_token_como_usado(token=token_puro)
+
+        # 5️⃣ Revoga sessões do usuário
+        revoke_all_sessions(username)
+
+        # 6️⃣ Auditoria
+        registrar_evento(
+            username=username,
+            role="system",
+            action="RESET_PASSWORD_TOKEN",
+            resource="users",
+            resource_id=None,
+            payload_before=None,
+            payload_after=None,
+            endpoint="/reset-password",
+            method="POST",
+        )
+
+        return {"message": "Senha redefinida com sucesso"}
+
+    except HTTPException:
+        # Resposta genérica para evitar enumeração de tokens inválidos/usados/expirados
+        logger.warning("Reset-password com falha de validação", exc_info=True)
+        return {"message": "Se o token for válido, a senha será redefinida."}
+    except Exception:
+        logger.exception("Erro inesperado no fluxo de reset-password")
+        raise HTTPException(
+            status_code=500,
+            detail="Erro interno ao redefinir a senha",
+        )
+
+
+@router.get("/me", response_model=User)
+def get_me(user: User = Depends(get_current_user_profile)):
+    return user
+
+
+@router.put("/me/profile")
+def update_profile(
+    payload: UserProfileUpdate,
+    user: UserContext = Depends(get_current_user),
+):
+    conn = connect()
+    try:
+        # valida email único
+        exists = query(
+            conn,
+            "SELECT 1 FROM users WHERE email = :email AND username != :username",
+            {"email": payload.email, "username": user.username},
+        )
+        if exists:
+            raise HTTPException(status_code=400, detail="EMAIL_ALREADY_EXISTS")
+
+        execute(
+            conn,
+            """
+            UPDATE users
+            SET email = :email,
+                name = :name,
+                fullname = :fullname
+            WHERE username = :username
+            """,
+            {
+                "email": payload.email,
+                "name": payload.name,
+                "fullname": payload.fullname,
+                "username": user.username,
+            },
+        )
+
+        registrar_evento(
+            conn=conn,
+            username=user.username,
+            role=user.role,
+            action="UPDATE_PROFILE",
+            resource="users",
+            resource_id=None,
+            payload_before=None,
+            payload_after=payload.model_dump(),
+            endpoint="/me/profile",
+            method="PUT",
+        )
+        conn.commit()
+
+        return {"message": "Perfil atualizado"}
+    finally:
+        conn.close()
+
+
+@router.post("/me/avatar")
+def upload_avatar(
+    file: UploadFile = File(...),
+    user: UserContext = Depends(get_current_user),
+):
+    # 1. Validação de Tipo (MIME)
+    if file.content_type not in ["image/jpeg", "image/png"]:
+        raise HTTPException(status_code=400, detail="INVALID_FILE_TYPE")
+
+    # 2. Validação de Tamanho (2MB)
+    # Move o cursor para o final para ler o tamanho
+    file.file.seek(0, 2)
+    size = file.file.tell()
+    # Retorna o cursor para o início para poder salvar depois
+    file.file.seek(0)
+
+    if size > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="FILE_TOO_LARGE")
+
+    # 3. Preparar diretório e caminho
+    upload_dir = Path("backend/static/avatars")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    extension = ".png" if "png" in file.content_type else ".jpg"
+    filename = f"{user.username}{extension}"
+    file_path = upload_dir / filename
+
+    # 4. Salvar arquivo
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # Caminho relativo para salvar no banco (para o frontend acessar via StaticFiles)
+    db_path = f"/static/avatars/{filename}"
+
+    conn = connect()
+    try:
+        execute(
+            conn,
+            "UPDATE users SET avatar_path = :path WHERE username = :username",
+            {"path": db_path, "username": user.username},
+        )
+
+        registrar_evento(
+            conn=conn,
+            username=user.username,
+            role=user.role,
+            action="UPLOAD_AVATAR",
+            resource="users",
+            resource_id=None,
+            payload_before=None,
+            payload_after={"avatar_path": db_path},
+            endpoint="/me/avatar",
+            method="POST",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"message": "Avatar atualizado", "path": db_path}
+
+
+==================================================
+FILE: .\frontend\app_config.py
+==================================================
+# frontend/app_config.py
+import streamlit as st
+
+
+def init_page(
+    page_title: str = "Painel de Dados",
+    page_icon: str = ":bar_chart:",
+    wide: bool = True,
+    sidebar_state: str = "auto",
+    menu_items: dict | None = None,
+) -> None:
+    """
+    Inicializa a página Streamlit com configurações padrão da UI.
+    - Chame no topo de CADA página (incluindo a página inicial).
+    - Em Streamlit recentes, chamadas repetidas sobrescrevem apenas o que você passar.
+    """
+    layout = "wide" if wide else "centered"
+    st.set_page_config(
+        page_title=page_title,
+        page_icon=page_icon,
+        layout=layout,
+        initial_sidebar_state=sidebar_state,
+        menu_items=menu_items,
+    )
+
+
+==================================================
+FILE: .\frontend\Home.py
+==================================================
+import streamlit as st
+from charts.charts import grafico_evolucao
+
+from frontend.core.pages import Page
+from frontend.layouts.base_layout import base_layout
+from frontend.loaders.registros import carregar_registros
+from frontend.services.navigation import set_current_page
+
+# 🔐 Interceptar reset token antes de exigir autenticação
+token = st.query_params.get("token", None)
+
+if token:
+    st.session_state.reset_token_from_link = token
+    st.switch_page(Page.RESET_PASSWORD.path)
+    st.stop()
+
+
+set_current_page(Page.HOME)
+
+api, user = base_layout("Home • Painel", ":house:", wide=True)
+
+# st.code(user)
+
+if user and user.get("password_expiring_soon"):
+    dias = user.get("password_days_remaining")
+    if dias > 0:
+        st.warning(
+            f"""Sua senha expira em {dias} dias.
+                Recomendamos alterar antecipadamente.
+            """,
+            icon="⚠️",
+        )
+
+
+st.title("📊 Painel Evolutivo de Dados")
+
+df = carregar_registros()
+
+# --- ler query params ---
+query_params = st.query_params
+categoria_qp = query_params.get("categoria", [None])[0]
+
+# --- inicializar estado ---
+if "categoria" not in st.session_state:
+    st.session_state.categoria = categoria_qp or df["categoria"].iloc[0]
+
+categorias = df["categoria"].unique()
+
+# --- sidebar ---
+with st.sidebar:
+    try:
+        cat_idx = categorias.tolist().index(st.session_state.categoria)
+    except ValueError:
+        cat_idx = 0
+
+    categoria = st.selectbox(
+        "Categoria",
+        options=df["categoria"].unique(),
+        index=cat_idx,
+    )
+
+    st.divider()
+
+    st.write("Access token")
+    st.code(st.session_state.get("access_token"))
+
+    st.write("Refresh token")
+    st.code(st.session_state.get("refresh_token"))
+
+    if st.button("Recarregar dados"):
+        st.cache_data.clear()
+        st.success("Dados recarregados")
+        st.rerun()
+
+    if st.button("Listar registros teste"):
+        resp = api.listar_registros()
+        st.success("Registros listados")
+        st.write(resp.json())
+
+
+# --- salvar no estado e na URL ---
+st.session_state.categoria = categoria
+st.query_params.categoria = categoria
+
+
+df_filtrado = df[df["categoria"] == categoria]
+
+st.markdown(
+    """
+    <style>
+    div[data-testid="stHorizontalBlock"] > div:nth-child(2) {
+        padding-left: 50px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# --- layout ---
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    fig = grafico_evolucao(df_filtrado, categoria)
+    st.plotly_chart(fig, width="stretch")
+
+with col2:
+    st.metric(label="Total de registros", value=len(df_filtrado))
+    st.metric(label="Soma do valor", value=df_filtrado["valor"].sum())
+
+
+==================================================
+FILE: .\frontend\__init__.py
+==================================================
+
+
+==================================================
+FILE: .\frontend\charts\charts.py
+==================================================
+import plotly.express as px
+
+
+def grafico_evolucao(df, categoria):
+    fig = px.line(df, x="data", y="valor", title=f"Evolução da categoria {categoria}")
+    return fig
+
+
+==================================================
+FILE: .\frontend\components\user_menu.py
+==================================================
+import time
+
+import streamlit as st
+
+from backend.core.config import settings
+from frontend.core.pages import Page
+from frontend.util.greeting import saudacao_usuario
+
+
+def render_user_menu(api, user):
+    if not user:
+        return
+
+    nome = user.get("name") or user.get("username")
+    saudacao = saudacao_usuario(nome)
+
+    # Lógica para montar a URL completa da imagem
+    avatar_path = user.get("avatar_path")
+    if avatar_path:
+        # Se for caminho relativo (/static...), concatena com a URL da API
+        if avatar_path.startswith("/"):
+            avatar_url = f"{settings.API_BASE_URL}{avatar_path}?v={int(time.time())}"
+        else:
+            avatar_url = avatar_path
+    else:
+        # Avatar padrão (placeholder)
+        avatar_url = f"https://ui-avatars.com/api/?name={nome}&background=random"
+
+    with st.sidebar:
+        st.markdown(
+            f"""
+        <div style="display:flex;align-items:center;gap:10px;padding: 10px 0;">
+            <img src="{avatar_url}" style="width:40px;height:40px;border-radius:50%;object-fit:cover;border: 2px solid #e0e0e0;">
+            <div style="line-height: 1.1;">
+                <div style="font-size: 11px; color: gray;">{saudacao}</div>
+                <div style="font-weight:600; font-size: 13px;">{user.get("role", "").upper()}</div>
+            </div>
+        </div>
+        <hr style="margin: 5px 0 10px 0;">
+        """,
+            unsafe_allow_html=True,
+        )
+
+        # Menu de navegação rápida
+        st.markdown(
+            '<div style="font-size: 12px; font-weight: 600; color: #666; margin-bottom: 5px;">⚙️ CONTA</div>',
+            unsafe_allow_html=True,
+        )
+
+        if st.button("👤 Meu Perfil", use_container_width=True):
+            st.switch_page(Page.PROFILE.path)
+
+        if st.button("🔐 Trocar Senha", use_container_width=True):
+            st.switch_page(Page.CHANGE_PASSWORD.path)
+
+        if st.button("🚪 Sair", type="primary", use_container_width=True):
+            api.logout()
+            st.session_state.clear()
+            st.switch_page(Page.LOGIN.path)
+
+
+==================================================
+FILE: .\frontend\core\pages.py
+==================================================
+from enum import Enum
+
+
+class Page(Enum):
+    LOGIN = ("login", "pages/0_🔐_Login.py")
+    HOME = ("home", "Home.py")
+    DATA = ("data", "pages/1_📄_Dados.py")
+    GERENCIAR = ("gerenciar", "pages/2_✏️_Gerenciar.py")
+    AUDITORIA = ("auditoria", "pages/3_📜_Auditoria.py")
+    ADMIN = ("admin", "pages/4_🛠️_Administração.py")
+    INTEGRIDADE = ("integridade", "pages/5_🔐_Integridade_Auditoria.py")
+    USERS = ("users", "pages/6_🧑‍💼_Usuários.py")
+    CHANGE_PASSWORD = ("change_password", "pages/7_🔑_Troca_de_Senha.py")
+    RESET_PASSWORD = ("reset_password", "pages/8_🔑_Redefinir_Senha.py")
+    PROFILE = ("profile", "pages/9_👤_Perfil.py")
+
+    def __init__(self, key, path):
+        self.key = key
+        self.path = path
+
+
+==================================================
+FILE: .\frontend\layouts\base_layout.py
+==================================================
+import streamlit as st
+
+from frontend.components.user_menu import render_user_menu
+from frontend.services.session import require_auth
+
+# ⚙️ Settings de Estilo da Sidebar
+SIDEBAR_FONT_SIZE = "14px"
+SIDEBAR_BUTTON_SIZE = "13px"
+
+
+def base_layout(page_title: str, page_icon: str, wide: bool = False):
+    # 1. Configuração da página deve ser SEMPRE a primeira instrução Streamlit
+    layout_mode = "wide" if wide else "centered"
+
+    try:
+        st.set_page_config(page_title=page_title, page_icon=page_icon, layout=layout_mode)
+    except Exception:
+        # Evita erro se set_page_config for chamado duas vezes (bug comum no Streamlit)
+        pass
+
+    # 🎨 Injeção de CSS para ajuste fino da Sidebar
+    st.markdown(
+        f"""
+        <style>
+        /* Ajuste global de fontes na sidebar (afeta textos soltos) */
+        section[data-testid="stSidebar"] * {{
+            font-size: {SIDEBAR_FONT_SIZE} !important;
+        }}
+
+        /* Botões mais compactos e com fonte menor */
+        section[data-testid="stSidebar"] .stButton button {{
+            font-size: {SIDEBAR_BUTTON_SIZE} !important;
+            padding-top: 4px !important;
+            padding-bottom: 4px !important;
+            padding-left: 10px !important;
+            padding-right: 10px !important;
+            min-height: 0px !important;
+            height: auto !important;
+            line-height: 1.2 !important;
+            margin-top: 2px !important;
+            margin-bottom: 2px !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # 2. Verifica autenticação
+    api, user = require_auth()
+
+    # 🔄 Recuperação de dados completos (Avatar/Email)
+    # Se o objeto user vier apenas do token (sem avatar_path), buscamos o perfil completo
+    if user and "avatar_path" not in user:
+        try:
+            resp = api._request("GET", "/me")
+            if resp.status_code == 200:
+                full_data = resp.json()
+                user.update(full_data)
+                st.session_state.user = user
+        except Exception:
+            pass
+
+    # 3. Renderiza menu lateral
+    render_user_menu(api, user)
+
+    return api, user
+
+
+==================================================
+FILE: .\frontend\loaders\registros.py
+==================================================
+import pandas as pd
+import streamlit as st
+from fastapi import Response
+
+from backend.core.config import settings
+from frontend.services.api import APIClient
+
+
+@st.cache_data
+def carregar_registros():
+    """
+    _api começa com underscore:
+    - NÃO entra no hash do cache
+    - mas continua sendo usado
+    """
+    resp: Response = APIClient.listar_registros_publico(settings.API_BASE_URL)
+
+    if resp.status_code != 200:
+        raise RuntimeError(f"Erro ao carregar registros: {resp.status_code} - {resp.text}")
+
+    dados = resp.json()
+    df = pd.DataFrame(dados)
+
+    if "data" in df.columns:
+        df["data"] = pd.to_datetime(df["data"], errors="coerce")
+        df["data"] = df["data"].dt.normalize()
+    return df
+
+
+==================================================
+FILE: .\frontend\pages\0_🔐_Login.py
+==================================================
+import time
+
+import requests
+import streamlit as st
+
+from backend.core.config import settings
+from frontend.app_config import init_page
+from frontend.core.pages import Page
+from frontend.services.api import APIClient
+
+user = st.session_state.get("user")
+
+login_error_message = st.session_state.get("login_error_message")
+
+if login_error_message:
+    st.toast(st.session_state.get("login_error_message"))
+
+if user:
+    st.info(
+        f"Você *já está logado* como :orange[-> **{user['username']}**] e com o nível de permissão :orange[-> **{user['role']}**]",
+        icon=":material/info:",
+    )
+    time.sleep(3)
+    st.switch_page("Home.py")
+    st.stop()
+
+
+api = APIClient(
+    base_url=settings.API_BASE_URL,
+    access_token=st.session_state.get("access_token"),
+    refresh_token=st.session_state.get("refresh_token"),
+)
+
+st.session_state.api = api
+
+init_page(page_title="Login", page_icon="🔐")
+st.title("🔐 Login")
+
+st.session_state.setdefault("login_in_progress", False)
+
+st.markdown(
+    """
+    <style>
+    /* Caixa de login baseada no bloco que contém o marcador */
+    div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] [data-login-box-marker]) {
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.02);
+        padding: 20px 22px;
+        border-radius: 12px;
+        margin-top: 8px;
+    }
+    /* Espaçamento interno entre widgets */
+    div[data-testid="stVerticalBlock"]:has(> div[data-testid="stMarkdown"] [data-login-box-marker]) > div {
+        gap: 0.5rem;
+    }
+    /* Esconde o marcador visual */
+    [data-login-box-marker] { display: none; }
+    div[data-testid="stForm"] {
+        border: none;
+        padding: 0;
+        margin: 0;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+@st.dialog("🔁 Recuperar senha")
+def forgot_password_dialog(prefill_username: str | None = None):
+    st.caption("Informe seu usuário para receber instruções de redefinição.")
+    with st.form("forgot_password_form", enter_to_submit=True):
+        username = st.text_input(
+            "Usuário",
+            value=prefill_username or "",
+            placeholder="Digite seu usuário",
+        )
+        submitted = st.form_submit_button("Enviar", type="primary")
+
+    if submitted:
+        if not username.strip():
+            st.toast("Informe o usuário.")
+            return
+
+        with st.spinner("Enviando solicitação..."):
+            try:
+                requests.post(
+                    f"{settings.API_BASE_URL}/forgot-password",
+                    json={"username": username.strip()},
+                    timeout=10,
+                )
+                # 🔒 Sempre resposta genérica
+                st.success("Se o usuário existir, você receberá instruções para redefinir a senha.")
+            except requests.exceptions.ConnectionError:
+                st.error("Não foi possível conectar à API.")
+            except Exception as e:
+                st.error(f"Erro inesperado: {e}")
+
+    st.divider()
+    if st.button("Já tenho um token"):
+        st.switch_page(Page.RESET_PASSWORD.path)
+
+
+with st.container(
+    border=True,
+):
+    st.markdown('<span data-login-box-marker="true"></span>', unsafe_allow_html=True)
+    username = st.text_input("Usuário", key="login_username")
+    with st.form("login", enter_to_submit=True):
+        password = st.text_input("Senha", type="password", key="login_password")
+        can_submit = bool(st.session_state.get("login_username", "").strip())
+
+        submitted = st.form_submit_button(
+            "Entrar",
+            type="primary",
+            disabled=st.session_state.login_in_progress or not can_submit,
+            on_click=lambda: st.session_state.update(
+                {"login_in_progress": True, "login_error_message": None}
+            ),
+        )
+
+        if login_error_message:
+            st.error(login_error_message)
+
+        if submitted:
+            st.toast("Login em andamento. Aguarde..", icon=":material/login:")
+
+            errors = []
+            if not st.session_state.get("login_username", "").strip():
+                errors.append("Informe o usuário.")
+            if not password:
+                errors.append("Informe a senha.")
+
+            if errors:
+                st.session_state.login_in_progress = False
+                for msg in errors:
+                    st.error(msg)
+            else:
+                try:
+                    with st.spinner("Entrando..."):
+                        resp = api.login(st.session_state.get("login_username", ""), password)
+
+                    if resp.status_code == 403:
+                        try:
+                            detail = resp.json().get("detail")
+                        except Exception:
+                            detail = None
+
+                        if detail in ("PASSWORD_CHANGE_REQUIRED", "PASSWORD_EXPIRED"):
+                            st.session_state.login_error_message = detail
+                            raise ValueError(detail)
+
+                    if resp.status_code != 200:
+                        st.session_state.login_error_message = "Usuário ou senha inválidos"
+                        # Não interrompe o app para manter o botão "Esqueci minha senha"
+                        raise ValueError("LOGIN_INVALID")
+
+                    data = resp.json()
+
+                    # 🔐 salva tokens sempre
+                    st.session_state.access_token = data["access_token"]
+                    st.session_state.refresh_token = data["refresh_token"]
+
+                    # inicializa API client
+                    st.session_state.api = APIClient(
+                        base_url=settings.API_BASE_URL,
+                        access_token=data["access_token"],
+                        refresh_token=data["refresh_token"],
+                    )
+                    st.session_state.login_error_message = None
+
+                    # 🚨 CASO ESPECIAL: senha pendente
+                    if data.get("must_change_password"):
+                        st.session_state.force_password_change = True
+                        st.session_state.login_in_progress = False
+                        print(Page.CHANGE_PASSWORD.path)
+                        st.switch_page(Page.CHANGE_PASSWORD.path)
+                        st.stop()
+
+                    st.session_state.force_password_change = False
+                    st.session_state.user = data["user"]
+                    st.success("Login realizado com sucesso")
+                    st.switch_page("Home.py")
+
+                except Exception as e:
+                    if str(e) == "LOGIN_INVALID" or str(e) == detail:
+                        # erro já exibido acima
+                        pass
+                    else:
+                        st.login_error_message = f"Erro ao conectar à API: {e}"
+                        # st.error(f"Erro ao conectar à API: {e}")
+
+                st.session_state.login_in_progress = False
+                st.rerun()
+
+
+st.divider()
+if st.button("Esqueci minha senha"):
+    forgot_password_dialog(prefill_username=st.session_state.get("login_username", ""))
+
+
+==================================================
+FILE: .\frontend\pages\1_📄_Dados.py
+==================================================
+import streamlit as st
+
+from frontend.core.pages import Page
+from frontend.layouts.base_layout import base_layout
+from frontend.loaders.registros import carregar_registros
+from frontend.services.navigation import set_current_page
+
+set_current_page(Page.DATA)
+
+api, user = base_layout("Dados detalhados", ":paper:")
+
+st.title("📄 Dados detalhados")
+
+df = carregar_registros()
+
+# reaproveita filtro da sessão
+categoria = st.session_state.get("categoria")
+
+if categoria:
+    df = df[df["categoria"] == categoria]
+    st.caption(f"Categoria selecionada: {categoria}")
+else:
+    st.caption("Nenhum filtro aplicado")
+
+st.dataframe(df)
+
+
+==================================================
+FILE: .\frontend\pages\2_✏️_Gerenciar.py
+==================================================
+import time
+
+import requests
+import streamlit as st
+
+from frontend.core.pages import Page
+from frontend.layouts.base_layout import base_layout
+from frontend.loaders.registros import carregar_registros
+from frontend.services.errors import handle_api_error
+from frontend.services.navigation import set_current_page
+
+set_current_page(Page.GERENCIAR)
+
+api, user = base_layout("Gerenciar registros", ":pencil:")
+
+# =====================
+# 🔐 Segurança
+# =====================
+
+role = user["role"]
+
+if role not in ("editor", "admin"):
+    st.warning("Você não tem permissão para editar registros.")
+    st.stop()
+
+st.title("✏️ Gerenciar registros")
+
+df = carregar_registros()
+
+# ======================
+# ➕ INSERIR
+# ======================
+st.subheader("➕ Novo registro")
+
+with st.form("form_inserir", clear_on_submit=False):
+    data = st.date_input("Data", format="DD/MM/YYYY")
+    categoria = st.selectbox("Categoria", options=df["categoria"].unique())
+    valor = st.number_input("Valor", step=1)
+
+    submitted = st.form_submit_button("Inserir", type="primary")
+
+if submitted:
+    erros = []
+
+    if not categoria.strip():
+        erros.append("A categoria é obrigatória.")
+
+    if valor is None:
+        erros.append("O valor é obrigatório.")
+
+    if erros:
+        for erro in erros:
+            st.error(erro, icon=":material/error:")
+    else:
+        try:
+            resp = api.criar_registro(
+                {
+                    "data": str(data),
+                    "categoria": categoria.strip(),
+                    "valor": int(valor),
+                }
+            )
+
+            handle_api_error(resp)
+
+            st.cache_data.clear()
+            st.toast("Registro adicionado com sucesso.", icon=":material/check:")
+            time.sleep(5)
+            st.rerun()
+        except requests.exceptions.HTTPError as e:
+            st.error(f"Erro da API ({e.response.status_code})")
+        except requests.exceptions.ConnectionError:
+            st.error("Não foi possível conectar à API.")
+        except Exception as e:
+            st.error(f"Erro inesperado: {e}")
+
+
+# ======================
+# ✏️ EDITAR / 🗑️ EXCLUIR
+# ======================
+st.subheader("✏️ Editar / 🗑️ Excluir")
+
+# 🔍 BUSCA REGISTROS =========
+
+# st.subheader("🔍 Buscar registro")
+
+
+# inicialização
+if "busca" not in st.session_state:
+    st.session_state.busca = ""
+
+if "busca_input" not in st.session_state:
+    st.session_state.busca_input = st.session_state.busca
+
+st.markdown(
+    """
+    <style>
+    /* container da busca */
+    div[data-testid="stVerticalBlock"]:has(> div > div > input[aria-label="🔍 Buscar registro"]) {
+        background-color: rgba(0, 123, 255, 0.08);
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 16px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+def on_busca_change():
+    st.session_state.busca = st.session_state.busca_input
+
+
+def limpar_busca():
+    st.session_state.busca = ""
+    st.session_state.busca_input = ""
+
+
+with st.chat_message(
+    "user",
+    avatar='<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g id="SVGRepo_bgCarrier" stroke-width="0"></g><g id="SVGRepo_tracerCarrier" stroke-linecap="round" stroke-linejoin="round"></g><g id="SVGRepo_iconCarrier"> <rect width="24" height="24" fill="transparent"></rect><circle cx="12" cy="12" r="9" fill="#fff" /><path fill-rule="evenodd" clip-rule="evenodd" d="M2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12ZM9 11.5C9 10.1193 10.1193 9 11.5 9C12.8807 9 14 10.1193 14 11.5C14 12.8807 12.8807 14 11.5 14C10.1193 14 9 12.8807 9 11.5ZM11.5 7C9.01472 7 7 9.01472 7 11.5C7 13.9853 9.01472 16 11.5 16C12.3805 16 13.202 15.7471 13.8957 15.31L15.2929 16.7071C15.6834 17.0976 16.3166 17.0976 16.7071 16.7071C17.0976 16.3166 17.0976 15.6834 16.7071 15.2929L15.31 13.8957C15.7471 13.202 16 12.3805 16 11.5C16 9.01472 13.9853 7 11.5 7Z" fill="#f74a36"></path></g></svg>',
+):
+    _, col_busca, col_limpar, _ = st.columns([0.5, 18, 2, 0.1], vertical_alignment="bottom")
+
+    with col_busca:
+        st.text_input(
+            "Buscar registro",
+            key="busca_input",
+            placeholder="Categoria, valor ou data (ex: A, 50, 01/2025)",
+            on_change=on_busca_change,
+        )
+
+    with col_limpar:
+        st.button("❌", help="Limpar busca", on_click=limpar_busca)
+
+
+busca = st.session_state.busca.strip().lower()
+
+df_filtrado = df.copy()
+
+if busca:
+    df_filtrado = df[
+        df["id"].astype(str).str.contains(busca)
+        | df["categoria"].str.lower().str.contains(busca)
+        | df["valor"].astype(str).str.contains(busca)
+        | df["data"].dt.strftime("%d/%m/%Y").str.contains(busca)
+    ]
+
+if df_filtrado.empty:
+    st.warning("Nenhum registro encontrado.")
+    st.stop()
+
+
+def formatar_registro(row):
+    return (
+        f"[ ID {row['id']}] ▶ Data: {row['data'].strftime('%d/%m/%Y')} , "
+        f"Categoria: {row['categoria']} , "
+        f"Valor: {row['valor']}"
+    )
+
+
+opcoes = {row["id"]: formatar_registro(row) for _, row in df_filtrado.iterrows()}
+
+
+registro_id = st.selectbox(
+    "Selecione o registro",
+    options=list(opcoes.keys()),
+    format_func=lambda x: opcoes[x],
+)
+
+registro = df_filtrado[df_filtrado["id"] == registro_id].iloc[0]
+
+with st.form("form_editar", clear_on_submit=True):
+    data_edit = st.date_input("Data", registro["data"], format="DD/MM/YYYY")
+    categoria_edit = st.text_input("Categoria", registro["categoria"])
+    valor_edit = st.number_input("Valor", value=int(registro["valor"]), step=1)
+
+    col1, col2 = st.columns(2)
+    salvar = col1.form_submit_button("Salvar alterações", type="primary")
+    if role == "admin":
+        excluir = col2.form_submit_button("Excluir registro")
+
+if salvar:
+    try:
+        resp = api.atualizar_registro(
+            registro_id,
+            {
+                "data": str(data_edit),
+                "categoria": categoria_edit.strip(),
+                "valor": int(valor_edit),
+            },
+        )
+        handle_api_error(resp)
+        st.cache_data.clear()
+        st.toast("Registro atualizado com sucesso.", icon=":material/check:")
+        time.sleep(5)
+        st.rerun()
+    except Exception as e:
+        st.error(f"Erro ao atualizar: {e}")
+
+
+@st.dialog("⚠️ Confirmar exclusão")
+def confirmar_exclusao(id_):
+    st.error("Essa ação não pode ser desfeita.")
+    st.write("Você está prestes a excluir o registro:")
+    st.write(f"{opcoes[registro_id]}")
+    st.write("")
+
+    col1, col2 = st.columns(2)
+
+    if col1.button("Cancelar"):
+        st.rerun()
+
+    if col2.button("Excluir definitivamente"):
+        try:
+            resp = api.deletar_registro(id_)
+            handle_api_error(resp)
+            st.cache_data.clear()
+            st.error("Registro excluído.")
+            time.sleep(3)
+            limpar_busca()
+            st.rerun()
+        except Exception as e:
+            st.error(f"Erro ao excluir: {e}")
+
+
+if role == "admin":
+    if excluir:
+        confirmar_exclusao(registro_id)
+
+
+==================================================
+FILE: .\frontend\pages\3_📜_Auditoria.py
+==================================================
+import pandas as pd
+import streamlit as st
+
+from frontend.core.pages import Page
+from frontend.layouts.base_layout import base_layout
+from frontend.services.errors import handle_api_error
+from frontend.services.navigation import set_current_page
+
+set_current_page(Page.AUDITORIA)
+
+api, user = base_layout("Auditoria", "📜")
+
+# =====================
+# 🔐 Segurança
+# =====================
+
+if user["role"] != "admin":
+    st.warning("Acesso restrito a administradores.")
+    st.stop()
+
+st.title("📜 Auditoria do Sistema")
+
+# =====================
+# 🔎 Filtros
+# =====================
+with st.expander("🔎 Filtros", expanded=True):
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        username = st.text_input("Usuário")
+
+    with col2:
+        action = st.selectbox(
+            "Ação",
+            options=["", "INSERT", "UPDATE", "DELETE", "PUT", "POST"],
+        )
+
+    with col3:
+        resource = st.text_input("Recurso (ex: registros)")
+
+    col4, col5 = st.columns(2)
+    with col4:
+        data_inicio = st.date_input("Data inicial", value=None, format="DD/MM/YYYY")
+
+    with col5:
+        data_fim = st.date_input("Data final", value=None, format="DD/MM/YYYY")
+
+# =====================
+# 📡 Buscar auditoria
+# =====================
+params = {}
+
+if username:
+    params["username"] = username
+
+if action:
+    params["action"] = action
+
+if resource:
+    params["resource"] = resource
+
+if data_inicio:
+    params["data_inicio"] = data_inicio.isoformat()
+
+if data_fim:
+    params["data_fim"] = data_fim.isoformat()
+
+try:
+    resp = api.listar_auditoria(params)
+    handle_api_error(resp)
+
+    dados = resp.json()
+    df = pd.DataFrame(dados)
+
+except Exception as e:
+    st.error(f"Erro ao carregar auditoria: {e}")
+    st.stop()
+
+# =====================
+# 📊 Exibição
+# =====================
+if df.empty:
+    st.info("Nenhum evento encontrado com os filtros informados.")
+    st.stop()
+
+st.dataframe(
+    df,
+    width="stretch",
+    hide_index=True,
+)
+
+# =====================
+# 🧾 Exportação CSV
+# =====================
+csv = df.to_csv(index=False).encode("utf-8")
+
+st.download_button(
+    label="🧾 Baixar CSV",
+    data=csv,
+    file_name="auditoria.csv",
+    mime="text/csv",
+)
+
+
+==================================================
+FILE: .\frontend\pages\4_🛠️_Administração.py
+==================================================
+import streamlit as st
+
+from frontend.core.pages import Page
+from frontend.layouts.base_layout import base_layout
+from frontend.services.navigation import set_current_page
+
+set_current_page(Page.ADMIN)
+
+api, user = base_layout("Administração", ":material/handyman:", wide=True)
+
+# =====================
+# 🔐 Segurança
+# =====================
+
+if user["role"] != "admin":
+    st.warning("Acesso restrito a administradores.")
+    st.stop()
+
+st.title("🛠️ Administração")
+
+# 1) Mostrar mensagem "flash" de sucesso (se existir) antes de desenhar o form
+_flash = st.session_state.pop("flash_success", None)
+if _flash:
+    st.success(_flash)
+
+# Se houver reset pendente, aplique AGORA (antes de instanciar os widgets)
+if st.session_state.get("revoke_reset_pending"):
+    st.session_state["revoke_username"] = ""
+    st.session_state["revoke_confirm"] = False
+    st.session_state.pop("revoke_reset_pending", None)
+
+# Garanta defaults para as keys dos widgets (antes de criar o form)
+st.session_state.setdefault("revoke_username", "")
+st.session_state.setdefault("revoke_confirm", False)
+
+
+st.header("💣 Revogar sessões de um usuário")
+
+with st.form("revoke_user_sessions", clear_on_submit=False):
+    # 2) Dê chaves (keys) aos widgets para controlar o estado
+    username = st.text_input("Username do usuário", key="revoke_username")
+    confirm = st.checkbox(
+        "Confirmo que desejo revogar TODAS as sessões desse usuário", key="revoke_confirm"
+    )
+    submitted = st.form_submit_button("Revogar sessões", type="primary")
+
+    if submitted:
+        if not username.strip():
+            st.error("Informe o username")
+        elif not confirm:
+            st.warning("Confirmação obrigatória")
+        else:
+            resp = api._request("POST", f"/admin/users/{username.strip()}/sessions/revoke")
+            if resp.status_code == 200:
+                # 4) Guarda a mensagem de sucesso para aparecer após o rerun
+                st.session_state["flash_success"] = f"Sessões de {username} revogadas com sucesso"
+                st.session_state["revoke_reset_pending"] = True
+
+                st.rerun()
+            else:
+                st.error(f"Erro ao revogar sessões: ({resp.status_code})")
+
+
+st.header("🎯 Revogar sessão específica")
+
+with st.form("revoke_single_session", enter_to_submit=True):
+    session_id = st.text_input("ID da sessão (session id)")
+    confirm = st.checkbox("Confirmo que desejo revogar essa sessão")
+    submitted = st.form_submit_button("Revogar sessão")
+
+if submitted:
+    if not session_id.strip():
+        st.error("Informe o session_id.")
+    elif not confirm:
+        st.warning("Confirmação obrigatória.")
+    else:
+        resp = api._request(
+            "POST",
+            f"/admin/sessions/{session_id.strip()}/revoke",
+        )
+
+        if resp.status_code == 200:
+            st.success("Sessão revogada com sucesso.")
+        else:
+            st.error(f"Erro ao revogar sessão ({resp.status_code})")
+
+st.divider()
+
+st.header("🧹 Limpar sessões vencidas ou revogadas")
+st.space("xxsmall")
+
+left, right = st.columns(2)
+
+with left:
+    if st.button("Remover sessões expiradas", width="stretch"):
+        resp = api._request(
+            "POST",
+            "/admin/sessions/cleanup",
+        )
+
+        if resp.status_code == 200:
+            data = resp.json()
+            st.success(f"{data['deleted_sessions']} sessões removidas.")
+        else:
+            st.error(f"Erro ao limpar sessões ({resp.status_code})")
+
+
+with right:
+    if st.button("Remover sessões revogadas", width="stretch"):
+        resp = api._request(
+            "POST",
+            "/admin/sessions/revoked/cleanup",
+        )
+
+        if resp.status_code == 200:
+            data = resp.json()
+            st.success(f"{data['deleted_sessions']} sessões removidas.")
+        else:
+            st.error(f"Erro ao limpar sessões ({resp.status_code})")
+
+
+==================================================
+FILE: .\frontend\pages\5_🔐_Integridade_Auditoria.py
+==================================================
+import json
+
+import streamlit as st
+
+from frontend.core.pages import Page
+from frontend.layouts.base_layout import base_layout
+from frontend.services.navigation import set_current_page
+
+set_current_page(Page.INTEGRIDADE)
+
+api, user = base_layout("Integridade da Auditoria", "🔐")
+
+# =====================
+# 🔐 Segurança
+# =====================
+
+if user["role"] != "admin":
+    st.warning("Acesso restrito a administradores.")
+    st.stop()
+
+st.title("🔐 Integridade da Auditoria")
+
+col1, col2 = st.columns([3, 1])
+
+with col2:
+    if st.button(
+        "🔄 Reexecutar verificação",
+        use_container_width=True,
+    ):
+        st.rerun()
+    st.space()
+
+# ============================
+# 🔎 VERIFICAÇÃO DA CADEIA
+# ============================
+
+with st.spinner("Verificando integridade da auditoria..."):
+    resp = api._request("GET", "/admin/audit/verify")
+
+if resp.status_code != 200:
+    st.error("Erro ao verificar auditoria.")
+    st.stop()
+
+result = resp.json()
+
+# ============================
+# 🟢 / 🔴 STATUS VISUAL
+# ============================
+
+if result["valid"]:
+    st.success("✔ Auditoria íntegra e confiável")
+    st.metric("Eventos verificados", result.get("checked_events", 0))
+else:
+    st.error("❌ Violação detectada na auditoria")
+    st.warning(f"Motivo: **{result['reason']}**")
+    st.warning(f"Evento afetado (ID): **{result['broken_at_id']}**")
+
+# ============================
+# 🧾 EXPORTAÇÃO
+# ============================
+
+st.divider()
+st.subheader("🧾 Exportar relatório")
+
+export_data = {
+    "status": "valid" if result["valid"] else "broken",
+    "details": result,
+}
+
+json_bytes = json.dumps(export_data, indent=2).encode("utf-8")
+
+st.download_button(
+    label="📥 Baixar relatório (JSON)",
+    data=json_bytes,
+    file_name="integridade_auditoria.json",
+    mime="application/json",
+)
+
+# ============================
+# ⛔ BLOQUEIO DE ESCRITA
+# ============================
+
+st.divider()
+st.subheader("⛔ Proteção do sistema")
+
+if not result["valid"]:
+    st.error(
+        """
+        ⚠️ **A auditoria foi comprometida.**
+
+        Recomendações:
+        - Bloquear novas operações de escrita
+        - Investigar manualmente a base
+        - Gerar evidências
+        """
+    )
+else:
+    st.info("Sistema liberado para operações de escrita.")
+
+
+==================================================
+FILE: .\frontend\pages\6_🧑‍💼_Usuários.py
+==================================================
+import pandas as pd
+import streamlit as st
+
+from frontend.core.pages import Page
+from frontend.layouts.base_layout import base_layout
+from frontend.services.navigation import set_current_page
+
+set_current_page(Page.USERS)
+
+api, user = base_layout("Administração de Usuários", "🧑‍💼", wide=True)
+
+# =====================
+# 🔐 Segurança
+# =====================
+
+# 🔒 Página com acesso restrito ao perfil admin
+if user["role"] != "admin":
+    st.error("Acesso restrito a administradores.")
+    st.stop()
+
+st.title("🧑‍💼 Administração de Usuários")
+
+response = api._request("GET", "/admin/users")
+
+usuarios = response.json()
+
+df = pd.DataFrame(usuarios)
+
+st.dataframe(df, width="stretch")
+
+st.divider()
+
+st.subheader("🔁 Reset de senha")
+
+username = st.selectbox("Usuário", df["username"].tolist())
+
+if st.button("Resetar senha", type="primary"):
+    resp = api._request("POST", f"/admin/users/{username}/reset-password")
+    if resp.status_code == 200:
+        senha = resp.json()
+        st.success("Senha resetada com sucesso")
+        st.divider()
+        st.error("⚠️ Senha temporária gerada")
+        st.code(senha["temporary_password"])
+        st.caption("Copie agora. Ela não será exibida novamente.")
+    else:
+        st.error(f"Erro ao resetar senha: ({resp.status_code})")
+
+
+==================================================
+FILE: .\frontend\pages\7_🔑_Troca_de_Senha.py
+==================================================
+from time import sleep
+
+import requests
+import streamlit as st
+
+from backend.core.config import settings
+from frontend.core.pages import Page
+from frontend.layouts.base_layout import base_layout
+from frontend.services.navigation import set_current_page
+
+set_current_page(Page.CHANGE_PASSWORD)
+
+api, user = base_layout("Troca de Senha", "🔑")
+
+carregando = st.session_state.get("loading_password_change")
+
+if carregando is None:
+    st.session_state.loading_password_change = False
+    carregando = False
+
+if carregando:
+    st.markdown(
+        """
+        <style>
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.65);
+            backdrop-filter: blur(4px);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            flex-direction: column;
+            color: white;
+            font-family: sans-serif;
+        }
+
+        .spinner {
+            border: 6px solid rgba(255, 255, 255, 0.2);
+            border-top: 6px solid #4CAF50;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+
+        .overlay-text {
+            font-size: 22px;
+            font-weight: 500;
+        }
+
+        .overlay-subtext {
+            font-size: 14px;
+            opacity: 0.8;
+            margin-top: 6px;
+        }
+        </style>
+
+        <div class="overlay">
+            <div class="spinner"></div>
+            <div class="overlay-text">Atualizando sua senha...</div>
+            <div class="overlay-subtext">Por favor aguarde.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+must_change_password = st.session_state.get("must_change_password")
+
+error_message = st.session_state.get("error_message")
+
+
+# if must_change_password is not None:
+#     if not api or not user:
+#         st.switch_page(Page.LOGIN.path)
+#         st.stop()
+
+
+st.title(f"🔑 Troca {'obrigatória ' if must_change_password else ''}de senha")
+
+
+# 🔐 Política de senha — UX clara
+with st.expander("📋 Política de senha", expanded=True):
+    st.markdown("""
+    Sua nova senha deve conter:
+    - ✅ **Mínimo de 6 caracteres**
+    - 🔠 **Pelo menos uma Letra maiúscula**
+    - 🔡 **Pelo menos uma Letra minúscula**
+    - 🔢 **Pelo menos um Número**
+    - 🔣 **Pelo menos um Caractere especial** (`!@#$%^&*` etc)
+    """)
+
+
+def show_toast_errors(errors):
+    for error in reversed(errors):
+        st.toast(error, icon="❌")
+        sleep(0.5)
+
+
+with st.form("change_password"):
+    old = st.text_input("Senha atual", type="password")
+    new = st.text_input("Nova senha", type="password")
+    confirm = st.text_input("Confirmar nova senha", type="password")
+
+    submitted = st.form_submit_button(
+        "Alterar senha",
+        on_click=lambda: st.session_state.update({"error_message": None}),
+    )
+
+    if error_message:
+        st.toast(error_message, icon="❌")
+        st.session_state.error_message = None
+
+    if submitted and not carregando:
+        errors = []
+        if not old:
+            errors.append("Informe a senha atual")
+        if not new:
+            errors.append("Informe uma nova senha")
+        if not confirm:
+            errors.append("Confirme a nova senha")
+        if new != confirm:
+            errors.append("As senhas não coincidem")
+
+        if errors:
+            st.session_state.login_in_progress = False
+            show_toast_errors(errors)
+            errors.clear()
+            st.rerun()
+        else:
+            # 🔒 ativa overlay
+            st.session_state.loading_password_change = True
+            st.rerun()
+
+if carregando:
+    with st.spinner("Validando senha e atualizando sessão..."):
+        resp = requests.post(
+            f"{settings.API_BASE_URL}/admin/change-password",
+            headers={"Authorization": f"Bearer {st.session_state.access_token}"},
+            json={
+                "old_password": old,
+                "new_password": new,
+            },
+            timeout=10,
+        )
+
+    data = resp.json()
+
+    if resp.status_code != 200:
+        st.session_state.loading_password_change = False
+        try:
+            detail = data["detail"]
+        except Exception:
+            detail = "Erro ao alterar a senha"
+
+        # st.error(detail)
+        st.session_state.error_message = detail
+        st.rerun()
+
+    # ✅ sucesso
+    st.session_state.clear()
+    st.toast("Senha alterada com sucesso", icon="✅")
+    sleep(3)
+    st.switch_page(Page.LOGIN.path)
+
+
+==================================================
+FILE: .\frontend\pages\8_🔑_Redefinir_Senha.py
+==================================================
+import time
+
+import requests
+import streamlit as st
+
+from backend.core.config import settings
+from frontend.app_config import init_page
+from frontend.core.pages import Page
+from frontend.services.navigation import set_current_page
+
+token_from_link = st.session_state.get("reset_token_from_link", "")
+
+set_current_page(Page.RESET_PASSWORD)
+
+init_page(page_title="Redefinir senha", page_icon="🔑")
+st.title("🔑 Redefinir senha")
+
+st.session_state.login_error_message = None
+token = st.text_input("Token de redefinição", value=token_from_link)
+new_password = st.text_input("Nova senha", type="password")
+confirm_password = st.text_input("Confirmar nova senha", type="password")
+
+if st.button("Redefinir", type="primary"):
+    if not token.strip():
+        st.error("Informe o token.")
+    elif not new_password:
+        st.error("Informe a nova senha.")
+    elif new_password != confirm_password:
+        st.error("As senhas não coincidem.")
+    else:
+        try:
+            resp = requests.post(
+                f"{settings.API_BASE_URL}/reset-password",
+                json={"token": token.strip(), "new_password": new_password},
+                timeout=10,
+            )
+
+            if resp.status_code >= 500:
+                st.error("Erro interno ao redefinir a senha.")
+            else:
+                st.session_state.reset_token_from_link = None
+                # 🔒 Sempre resposta genérica
+                st.success("Se o token for válido, a senha será redefinida.")
+                time.sleep(5)
+                st.switch_page(Page.LOGIN.path)
+        except requests.exceptions.ConnectionError:
+            st.error("Não foi possível conectar à API.")
+        except Exception as exc:
+            st.error(f"Erro inesperado: {exc}")
+
+
+==================================================
+FILE: .\frontend\pages\9_👤_Perfil.py
+==================================================
+import time
+
+import requests
+import streamlit as st
+
+from backend.core.config import settings
+from frontend.core.pages import Page
+from frontend.layouts.base_layout import base_layout
+from frontend.services.navigation import set_current_page
+
+# Define a página atual para controle de navegação
+set_current_page(Page.PROFILE)
+
+# Usa o layout base
+api, user = base_layout("Meu Perfil", "👤")
+
+# 🔄 Otimização: Só busca do backend se faltar dados essenciais (evita delay)
+if not user.get("email"):
+    try:
+        resp = api._request("GET", "/me")
+        if resp.status_code == 200:
+            user = resp.json()
+            st.session_state.user = user  # Atualiza sessão
+    except Exception:
+        pass
+
+st.title("👤 Meu Perfil")
+st.caption("Gerencie suas informações pessoais e foto de perfil.")
+
+# --- Layout em Colunas ---
+col_info, col_avatar = st.columns([2, 1])
+
+# --- Coluna 1: Dados Cadastrais ---
+with col_info:
+    st.subheader("📝 Dados Pessoais")
+    with st.form("profile_form"):
+        email = st.text_input("Email", value=user.get("email") or "")
+        name = st.text_input("Nome de Exibição", value=user.get("name") or "")
+        fullname = st.text_input("Nome Completo", value=user.get("fullname") or "")
+
+        submitted = st.form_submit_button("Salvar Alterações", type="primary")
+
+        if submitted:
+            try:
+                resp = api._request(
+                    "PUT", "/me/profile", json={"email": email, "name": name, "fullname": fullname}
+                )
+
+                if resp.status_code == 200:
+                    # 🔄 Recarrega dados do backend para garantir consistência total
+                    # (evita perder o avatar_path se o objeto local estiver desincronizado)
+                    user_resp = api._request("GET", "/me")
+                    if user_resp.status_code == 200:
+                        st.session_state.user = user_resp.json()
+
+                    st.success("Perfil atualizado com sucesso!")
+                    st.rerun()
+                else:
+                    error_detail = resp.json().get("detail", "Erro ao atualizar")
+                    if error_detail == "EMAIL_ALREADY_EXISTS":
+                        st.error("Este e-mail já está em uso por outro usuário.")
+                    else:
+                        st.error(f"Erro: {error_detail}")
+            except Exception as e:
+                st.error(f"Erro de conexão: {e}")
+
+# --- Coluna 2: Avatar ---
+with col_avatar:
+    st.subheader("📸 Foto de Perfil")
+
+    # Upload de nova foto
+    uploaded_file = st.file_uploader("Alterar foto", type=["jpg", "png", "jpeg"])
+
+    if uploaded_file:
+        st.image(uploaded_file, width=150, caption="Pré-visualização")
+
+        if st.button("Salvar Nova Foto", type="primary"):
+            with st.spinner("Enviando..."):
+                try:
+                    # Prepara o arquivo para envio multipart/form-data
+                    files = {"file": (uploaded_file.name, uploaded_file, uploaded_file.type)}
+
+                    # Usa requests direto aqui pois o wrapper api._request pode tentar serializar JSON
+                    resp = requests.post(
+                        f"{settings.API_BASE_URL}/me/avatar",
+                        headers={"Authorization": f"Bearer {st.session_state.access_token}"},
+                        files=files,
+                        timeout=15,
+                    )
+
+                    if resp.status_code == 200:
+                        # 🔄 Recarrega dados do backend para garantir consistência e URL atualizada
+                        user_resp = api._request("GET", "/me")
+                        if user_resp.status_code == 200:
+                            st.session_state.user = user_resp.json()
+
+                        st.success("Avatar atualizado!")
+                        st.rerun()
+                    else:
+                        st.error(f"Erro no upload: {resp.text}")
+                except Exception as e:
+                    st.error(f"Erro ao enviar arquivo: {e}")
+    else:
+        # Exibe avatar atual
+        avatar_path = user.get("avatar_path")
+        if avatar_path:
+            if avatar_path.startswith("/"):
+                # ?v=timestamp força o navegador a recarregar a imagem (cache busting)
+                img_url = f"{settings.API_BASE_URL}{avatar_path}?v={int(time.time())}"
+            else:
+                img_url = avatar_path
+        else:
+            nome = user.get("name") or user.get("username") or "User"
+            img_url = f"https://ui-avatars.com/api/?name={nome}&background=random&size=150"
+
+        st.image(img_url, width=150, caption="Avatar Atual")
+
+
+==================================================
+FILE: .\frontend\services\api.py
+==================================================
+import json
+import logging
+import sys
+
+import requests
+import streamlit as st
+
+from backend.core.config import settings
+from frontend.core.pages import Page
+from frontend.services.navigation import get_current_page
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    logger.addHandler(handler)
+
+
+class APIClient:
+    def __init__(self, base_url: str, access_token: str, refresh_token: str):
+        self.base_url = base_url.rstrip("/")
+        self.access_token = access_token
+        self.refresh_token = refresh_token
+        self.timeout = 10
+
+    # -------------------------
+    # Helpers internos
+    # -------------------------
+
+    def _headers(self):
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+        }
+
+    def ensure_user_refresh(self):
+        """
+        Força uma chamada leve ao backend apenas para sincronizar contexto.
+        """
+        resp = self._request("GET", "/me")
+
+        if resp.status_code != 200:
+            return False
+
+        return True
+
+    def _sync_user_from_headers(self, resp):
+        logger.debug("Sincronizando dados de usuário...")
+        header = resp.headers.get("X-User-Context")
+
+        if not header:
+            return
+
+        try:
+            data = json.loads(header)
+            st.session_state.user = data
+        except Exception as e:
+            logger.error(f"Erro ao decodificar X-User-Context: {e}")
+
+    def _refresh_acess_token(self) -> bool:
+        """'
+        Tenta renovar o access token usando o refresh token.
+        Retorna True se conseguiu, False se falhou.
+        """
+        resp = requests.post(
+            f"{self.base_url}/refresh",
+            headers={
+                "Authorization": f"Bearer {self.refresh_token}",
+            },
+        )
+        if resp.status_code != 200:
+            return False
+
+        data = resp.json()
+
+        self.access_token = data["access_token"]
+        self.refresh_token = data["refresh_token"]
+
+        # sincroniza com o session_state
+        st.session_state.access_token = self.access_token
+        st.session_state.refresh_token = self.refresh_token
+
+        return True
+
+    def _request(self, method: str, path: str, **kwargs):
+        """
+        Request genérico com retry automático via refresh token.
+        """
+        resp = requests.request(
+            method,
+            f"{self.base_url}{path}",
+            headers=self._headers(),
+            **kwargs,
+        )
+
+        self._sync_user_from_headers(resp)
+
+        if resp.status_code == 403:
+            try:
+                detail = resp.json().get("detail")
+            except Exception:
+                detail = None
+
+            current_page = get_current_page()
+
+            if detail in ("PASSWORD_CHANGE_REQUIRED", "PASSWORD_EXPIRED"):
+                if current_page != Page.CHANGE_PASSWORD.key:
+                    # ⚠️ Apenas em desenvolvimento, retorna o token no response
+                    if settings.ENV == "dev":
+                        logger.warning(f"Password change required or expired. Detail: {detail}")
+
+                    st.session_state.force_password_change = True
+                    st.switch_page(Page.CHANGE_PASSWORD.path)
+                    st.stop()
+
+        # 🔁 fluxo normal de refresh
+        if resp.status_code != 401:
+            return resp
+
+        # tenta refresh
+        if not self._refresh_acess_token():
+            self._force_logout()
+            return resp
+
+        # retry UMA vez
+        return requests.request(
+            method,
+            f"{self.base_url}{path}",
+            headers=self._headers(),
+            **kwargs,
+        )
+
+    def _force_logout(self):
+        st.session_state.api = None
+        st.session_state.user = None
+        st.session_state.access_token = None
+        st.session_state.refresh_token = None
+        st.switch_page(Page.LOGIN.path)
+
+    # -------------------------
+    # Métodos públicos (sem auth)
+    # -------------------------
+
+    @staticmethod
+    def listar_registros_publico(base_url: str, timeout: int = 10):
+        return requests.get(
+            f"{base_url.rstrip('/')}/registros",
+            timeout=timeout,
+        )
+
+    # -------------------------
+    # Métodos públicos (com auth)
+    # -------------------------
+
+    def listar_registros(self):
+        return self._request("GET", "/registros", timeout=self.timeout)
+
+    def criar_registro(self, payload: dict):
+        return self._request("POST", "/registros", json=payload, timeout=self.timeout)
+
+    def atualizar_registro(self, id_: int, payload: dict):
+        return self._request("PUT", f"/registros/{id_}", json=payload, timeout=self.timeout)
+
+    def deletar_registro(self, id_: int):
+        return self._request("DELETE", f"/registros/{id_}", timeout=self.timeout)
+
+    def listar_auditoria(self, params: dict):
+        return self._request("GET", "/auditoria", params=params, timeout=self.timeout)
+
+    def logout(self):
+        return requests.post(
+            f"{self.base_url}/logout",
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+
+    def login(self, username: str, password: str):
+        return requests.post(
+            f"{self.base_url}/login",
+            params={
+                "username": username,
+                "password": password,
+            },
+            timeout=self.timeout,
+        )
+
+
+==================================================
+FILE: .\frontend\services\errors.py
+==================================================
+import streamlit as st
+
+from frontend.core.pages import Page
+
+__all__ = ["handle_api_error"]
+
+# print(">>> carregando errors.py")
+# print(">>> globals:", list(globals().keys()))
+
+
+def handle_api_error(resp):
+    if resp.status_code == 401:
+        st.error("Sessão expirada ou credenciais inválidas.")
+        st.session_state.api = None
+        st.switch_page(Page.LOGIN.path)
+        st.stop()
+
+    if resp.status_code == 403:
+        st.error("Você não tem permissão para executar esta ação.")
+        st.stop()
+
+    if resp.status_code >= 500:
+        st.error("Erro interno no servidor.")
+        st.stop()
+
+
+==================================================
+FILE: .\frontend\services\navigation.py
+==================================================
+import streamlit as st
+
+from frontend.core.pages import Page
+
+
+def set_current_page(page: Page):
+    st.session_state["_page"] = page.key
+
+
+def get_current_page() -> str | None:
+    return st.session_state.get("_page")
+
+
+==================================================
+FILE: .\frontend\services\session.py
+==================================================
+import logging
+import sys
+import time
+
+import streamlit as st
+
+from backend.core.config import settings
+from frontend.core.pages import Page
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    logger.addHandler(handler)
+
+
+def require_auth():
+    api = st.session_state.get("api")
+    user = st.session_state.get("user")
+
+    if not api or not user:
+        st.switch_page(Page.LOGIN.path)
+        st.stop()
+
+    # Otimização: Valida no backend apenas a cada 5 minutos (300s)
+    last_check = st.session_state.get("last_auth_check", 0)
+    now = time.time()
+    cache_duration = 300  # 5 minutos
+
+    if (now - last_check) > cache_duration:
+        with st.spinner("Verificando sessão..."):  # Opcional: remover spinner para ser transparente
+            logger.info("Check de permissão e sessão iniciada.")
+            # chamada leve para validar sessão
+            valid = api.ensure_user_refresh()
+
+        if not valid:
+            st.session_state.clear()
+            st.switch_page(Page.LOGIN.path)
+            st.stop()
+
+        st.session_state["last_auth_check"] = now
+    elif settings.ENV == "dev":
+        logger.info("Verificação de sessão pulada (cache ativo).")
+
+    return api, user
+
+
+==================================================
+FILE: .\frontend\services\__init__.py
+==================================================
+
+
+==================================================
+FILE: .\frontend\util\greeting.py
+==================================================
+from datetime import datetime
+
+
+def saudacao_usuario(nome: str) -> str:
+    hora = datetime.now().hour
+    if 5 <= hora < 12:
+        periodo = "Bom dia"
+    elif 12 <= hora < 18:
+        periodo = "Boa tarde"
+    else:
+        periodo = "Boa noite"
+
+    # Pega apenas o primeiro nome se for composto
+    primeiro_nome = nome.split()[0] if nome else "Usuário"
+    return f"{periodo}, {primeiro_nome}!"
+
+
+==================================================
+FILE: .\migrations\V001__create_registros.py
+==================================================
+def upgrade(conn):
+    """
+    Cria a tabela 'registros' se não existir e insere um seed inicial de forma idempotente.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS registros (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            data TEXT NOT NULL,
+            categoria TEXT NOT NULL,
+            valor INTEGER NOT NULL
+        )
+        """
+    )
+
+    # Seed idempotente: só insere se a tabela estiver vazia
+    cur = conn.execute("SELECT COUNT(*) FROM registros")
+    (count,) = cur.fetchone()
+    if count == 0:
+        dados = [
+            ("2025-01-01", "A", 10),
+            ("2025-01-02", "A", 15),
+            ("2025-01-03", "B", 8),
+            ("2025-01-04", "B", 20),
+            ("2025-01-05", "A", 7),
+        ]
+        conn.executemany(
+            "INSERT INTO registros (data, categoria, valor) VALUES (?, ?, ?)", dados
+        )
+
+
+==================================================
+FILE: .\migrations\V002__auditoria_registros.py
+==================================================
+"""
+V002 — Camada de auditoria (compatível e idempotente).
+- Garante colunas criado_em, atualizado_em, origem.
+- Backfill nos valores NULL.
+- (Re)cria gatilhos de auditoria.
+- Cria índices se faltarem.
+"""
+
+
+def upgrade(conn):
+    def has_column(table: str, col: str) -> bool:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        names = {r[1] for r in rows}  # r[1] = nome da coluna
+        return col in names
+
+    def trigger_exists(name: str) -> bool:
+        sql = "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?"
+        return conn.execute(sql, (name,)).fetchone() is not None
+
+    def index_exists(name: str) -> bool:
+        sql = "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?"
+        return conn.execute(sql, (name,)).fetchone() is not None
+
+    # 1) Colunas (checa antes de adicionar)
+    if not has_column("registros", "criado_em"):
+        conn.execute("ALTER TABLE registros ADD COLUMN criado_em TEXT")
+    if not has_column("registros", "atualizado_em"):
+        conn.execute("ALTER TABLE registros ADD COLUMN atualizado_em TEXT")
+    if not has_column("registros", "origem"):
+        conn.execute("ALTER TABLE registros ADD COLUMN origem TEXT")
+
+    # 2) Backfill
+    conn.execute(
+        """
+        UPDATE registros
+           SET criado_em     = COALESCE(criado_em, CURRENT_TIMESTAMP),
+               atualizado_em = COALESCE(atualizado_em, CURRENT_TIMESTAMP),
+               origem        = COALESCE(origem, 'script_migracao')
+         WHERE criado_em IS NULL
+            OR atualizado_em IS NULL
+            OR origem IS NULL
+        """
+    )
+
+    # 3) Triggers — drop se existir e recria
+    if trigger_exists("trg_registros_set_atualizado_em"):
+        conn.execute("DROP TRIGGER trg_registros_set_atualizado_em")
+    conn.executescript(
+        """
+        CREATE TRIGGER trg_registros_set_atualizado_em
+        AFTER UPDATE ON registros
+        FOR EACH ROW
+        WHEN NEW.atualizado_em IS OLD.atualizado_em
+        BEGIN
+            UPDATE registros
+               SET atualizado_em = CURRENT_TIMESTAMP
+             WHERE id = NEW.id;
+        END;
+        """
+    )
+
+    if trigger_exists("trg_registros_set_criado_em_default"):
+        conn.execute("DROP TRIGGER trg_registros_set_criado_em_default")
+    conn.executescript(
+        """
+        CREATE TRIGGER trg_registros_set_criado_em_default
+        AFTER INSERT ON registros
+        FOR EACH ROW
+        WHEN NEW.criado_em IS NULL
+        BEGIN
+            UPDATE registros
+               SET criado_em = CURRENT_TIMESTAMP
+             WHERE id = NEW.id;
+        END;
+        """
+    )
+
+    if trigger_exists("trg_registros_set_origem_default"):
+        conn.execute("DROP TRIGGER trg_registros_set_origem_default")
+    conn.executescript(
+        """
+        CREATE TRIGGER trg_registros_set_origem_default
+        AFTER INSERT ON registros
+        FOR EACH ROW
+        WHEN NEW.origem IS NULL
+        BEGIN
+            UPDATE registros
+               SET origem = 'script_migracao'
+             WHERE id = NEW.id;
+        END;
+        """
+    )
+
+    # 4) Índices (checa antes de criar)
+    if not index_exists("idx_registros_criado_em"):
+        conn.execute("CREATE INDEX idx_registros_criado_em ON registros(criado_em)")
+    if not index_exists("idx_registros_atualizado_em"):
+        conn.execute(
+            "CREATE INDEX idx_registros_atualizado_em ON registros(atualizado_em)"
+        )
+
+
+==================================================
+FILE: .\migrations\V003__unicidade_upsert_e_wal.py
+==================================================
+"""
+V003 — Unicidade por (data, categoria), upsert via view e WAL mode.
+
+Passos:
+1) Remove duplicados preservando o mais recente por (data, categoria).
+2) Cria índice ÚNICO em (data, categoria) e índice auxiliar (categoria, data).
+3) Cria view + gatilho INSTEAD OF INSERT para upsert.
+4) Ativa WAL mode e synchronous=NORMAL (fora de transação).
+"""
+
+
+def upgrade(conn):
+    # 1) Remoção idempotente de duplicados por (data, categoria)
+    conn.executescript(
+        """
+        WITH ranked AS (
+            SELECT
+                id,
+                data,
+                categoria,
+                ROW_NUMBER() OVER (
+                    PARTITION BY data, categoria
+                    ORDER BY COALESCE(atualizado_em, criado_em) DESC, id DESC
+                ) AS rn
+            FROM registros
+        )
+        DELETE FROM registros
+        WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+        """
+    )
+
+    # 2) Índices (UNIQUE e auxiliar)
+    conn.executescript(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_registros_data_categoria
+            ON registros (data, categoria);
+
+        CREATE INDEX IF NOT EXISTS ix_registros_categoria_data
+            ON registros (categoria, data);
+        """
+    )
+
+    # 3) View + gatilho de UPSERT
+    conn.executescript(
+        """
+        DROP TRIGGER IF EXISTS trg_vw_registros_upsert_insert;
+        DROP VIEW IF EXISTS vw_registros_upsert;
+
+        CREATE VIEW IF NOT EXISTS vw_registros_upsert AS
+        SELECT id, data, categoria, valor, criado_em, atualizado_em, origem
+        FROM registros;
+
+        CREATE TRIGGER trg_vw_registros_upsert_insert
+        INSTEAD OF INSERT ON vw_registros_upsert
+        FOR EACH ROW
+        BEGIN
+            INSERT INTO registros (data, categoria, valor, origem)
+            VALUES (NEW.data, NEW.categoria, NEW.valor, NEW.origem)
+            ON CONFLICT(data, categoria) DO UPDATE SET
+                valor          = excluded.valor,
+                origem         = COALESCE(excluded.origem, registros.origem),
+                atualizado_em  = CURRENT_TIMESTAMP;
+        END;
+        """
+    )
+
+    # 4) Ativa WAL fora de transação: faz um commit explícito e aplica PRAGMAs
+    conn.commit()  # encerra a transação aberta pelo runner (IMPORTANTE)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+
+
+==================================================
+FILE: .\migrations\V004__create_auditoria.sql
+==================================================
+CREATE TABLE auditoria (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    username TEXT NOT NULL,
+    role TEXT NOT NULL,
+    action TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    resource_id INTEGER,
+    payload_before TEXT,
+    payload_after TEXT,
+    endpoint TEXT NOT NULL,
+    method TEXT NOT NULL
+);
+
+
+==================================================
+FILE: .\migrations\V005__sessions.sql
+==================================================
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL,
+    role TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked INTEGER NOT NULL DEFAULT 0
+);
+
+
+==================================================
+FILE: .\migrations\V006__add_audit_hash_chain.sql
+==================================================
+ALTER TABLE auditoria ADD COLUMN prev_hash TEXT;
+ALTER TABLE auditoria ADD COLUMN event_hash TEXT;
+
+-- índice ajuda na verificação sequencial
+CREATE INDEX IF NOT EXISTS idx_auditoria_id ON auditoria(id);
+
+
+==================================================
+FILE: .\migrations\V007__users_table.sql
+==================================================
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+
+==================================================
+FILE: .\migrations\V008__must_change_password.sql
+==================================================
+ALTER TABLE users
+ADD COLUMN must_change_password INTEGER DEFAULT 0;
+
+==================================================
+FILE: .\migrations\V009__password_reset_tokens.sql
+==================================================
+-- 005_password_reset_tokens.sql
+
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    username TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+
+    FOREIGN KEY (username) REFERENCES users(username)
+);
+
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_username
+    ON password_reset_tokens(username);
+
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_token_hash
+    ON password_reset_tokens(token_hash);
+
+
+==================================================
+FILE: .\migrations\V010__password_changed_at.sql
+==================================================
+ALTER TABLE users
+ADD COLUMN password_changed_at TIMESTAMP;
+
+==================================================
+FILE: .\migrations\V011__password_expiration.sql
+==================================================
+ALTER TABLE users ADD COLUMN password_expires_at TEXT;
+UPDATE users
+-- SET password_expires_at = datetime('now', '+90 days')
+SET password_expires_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+90 days')
+WHERE password_expires_at IS NULL;
+
+==================================================
+FILE: .\migrations\V012__users_email.sql
+==================================================
+ALTER TABLE users ADD COLUMN email TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_users_email
+ON users(email);
+
+==================================================
+FILE: .\migrations\V013__users_profile_fields.sql
+==================================================
+ALTER TABLE users ADD COLUMN name TEXT;
+ALTER TABLE users ADD COLUMN fullname TEXT;
+ALTER TABLE users ADD COLUMN avatar_path TEXT;
+
+==================================================
+FILE: .\scripts\start_all.sh
+==================================================
+
+#!/usr/bin/env bash
+set -euo pipefail
+# Inicia backend e frontend; encerra backend ao sair
+cd "$(dirname "$0")/.."
+export PYTHONPATH="$PWD"
+
+uvicorn backend.main:app --reload &
+BACK_PID=$!
+cleanup(){ kill "$BACK_PID" 2>/dev/null || true; }
+trap cleanup EXIT
+
+# Opcional: aguarda backend subir se curl existir
+READY=0
+if command -v curl >/dev/null 2>&1; then
+  for i in {1..30}; do
+    if curl -fsS http://127.0.0.1:8000/docs >/dev/null 2>&1; then READY=1; break; fi
+    sleep 0.3
+  done
+fi
+[ "$READY" -eq 1 ] && echo "[ok] backend no ar em http://127.0.0.1:8000" || echo "[info] seguindo sem checar disponibilidade do backend"
+
+# Streamlit em primeiro plano
+exec streamlit run frontend/Home.py
+``
+
+
+==================================================
+FILE: .\scripts\start_all_windows.bat
+==================================================
+
+@echo off
+REM Abre backend e frontend em janelas separadas do CMD
+cd /d "%~dp0\.."
+set "PYTHONPATH=%CD%"
+start "Uvicorn (backend)" cmd /k "set PYTHONPATH=%PYTHONPATH% && uvicorn backend.main:app --reload"
+start "Streamlit (frontend)" cmd /k "set PYTHONPATH=%PYTHONPATH% && streamlit run frontend\Home.py"
+echo [OK] Backend e frontend foram iniciados em janelas separadas.
+
+
+==================================================
+FILE: .\scripts\start_backend.bat
+==================================================
+
+@echo off
+REM Inicia o backend (Uvicorn) a partir da raiz do projeto
+cd /d "%~dp0\.."
+set PYTHONPATH=%CD%
+uvicorn backend.main:app --reload
+
+
+==================================================
+FILE: .\scripts\start_backend.sh
+==================================================
+
+#!/usr/bin/env bash
+set -euo pipefail
+# Inicia o backend (Uvicorn) a partir da raiz do projeto
+cd "$(dirname "$0")/.."
+export PYTHONPATH="$PWD"
+exec uvicorn backend.main:app --reload
+
+
+==================================================
+FILE: .\scripts\start_frontend.bat
+==================================================
+
+@echo off
+REM Inicia o frontend (Streamlit) a partir da raiz do projeto
+cd /d "%~dp0\.."
+set PYTHONPATH=%CD%
+streamlit run frontend\Home.py
+
+
+==================================================
+FILE: .\scripts\start_frontend.sh
+==================================================
+
+#!/usr/bin/env bash
+set -euo pipefail
+# Inicia o frontend (Streamlit) a partir da raiz do projeto
+cd "$(dirname "$0")/.."
+export PYTHONPATH="$PWD"
+exec streamlit run frontend/Home.py
+``
+
+
+==================================================
+FILE: .\v1 - only streamlit\app.py
+==================================================
+import streamlit as st
+from charts.charts import grafico_evolucao
+from data.loader import carregar_dados
+
+st.set_page_config(page_title="Painel Evolutivo de Dados", layout="wide")
+st.title("📊 Painel Evolutivo de Dados")
+
+df = carregar_dados()
+
+# --- ler query params ---
+query_params = st.query_params
+categoria_qp = query_params.get("categoria", [None])[0]
+
+# --- inicializar estado ---
+if "categoria" not in st.session_state:
+    st.session_state.categoria = categoria_qp or df["categoria"].iloc[0]
+
+categorias = df["categoria"].unique()
+
+# --- sidebar ---
+with st.sidebar:
+    try:
+        cat_idx = categorias.tolist().index(st.session_state.categoria)
+    except ValueError:
+        cat_idx = 0
+
+    categoria = st.selectbox(
+        "Categoria",
+        options=df["categoria"].unique(),
+        index=cat_idx,
+    )
+
+    st.divider()
+
+    if st.button("Recarregar dados"):
+        st.cache_data.clear()
+        st.success("Dados recarregados")
+        st.rerun()
+
+
+# --- salvar no estado e na URL ---
+st.session_state.categoria = categoria
+st.query_params.categoria = categoria
+
+
+df_filtrado = df[df["categoria"] == categoria]
+
+st.markdown(
+    """
+    <style>
+    div[data-testid="stHorizontalBlock"] > div:nth-child(2) {
+        padding-left: 50px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# --- layout ---
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    fig = grafico_evolucao(df_filtrado, categoria)
+    st.plotly_chart(fig, width="stretch")
+
+with col2:
+    st.metric(label="Total de registros", value=len(df_filtrado))
+    st.metric(label="Soma do valor", value=df_filtrado["valor"].sum())
+
+
+==================================================
+FILE: .\v1 - only streamlit\create_sqlite_database.py
+==================================================
+import sqlite3
+from pathlib import Path
+
+db_path = Path.cwd() / "painel_dados_chatgpt_tutorial" / "data" / "dados.db"
+db_path.parent.mkdir(exist_ok=True)
+
+conn = sqlite3.connect(db_path)
+
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS registros (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    data TEXT NOT NULL,
+    categoria TEXT NOT NULL,
+    valor INTEGER NOT NULL
+)
+""")
+
+dados = [
+    ("2025-01-01", "A", 10),
+    ("2025-01-02", "A", 15),
+    ("2025-01-03", "B", 8),
+    ("2025-01-04", "B", 20),
+    ("2025-01-05", "A", 7),
+]
+
+cursor.execute("DELETE FROM registros")
+cursor.executemany(
+    "INSERT INTO registros (data, categoria, valor) VALUES (?, ?, ?)", dados
+)
+
+conn.commit()
+conn.close()
+
+print("Banco criado com sucesso.")
+
+
+==================================================
+FILE: .\v1 - only streamlit\requirements.txt
+==================================================
+streamlit
+pandas
+plotly
+fastapi
+uvicorn
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
+slowapi
+requests
+
+
+==================================================
+FILE: .\v1 - only streamlit\charts\charts.py
+==================================================
+import plotly.express as px
+
+
+def grafico_evolucao(df, categoria):
+    fig = px.line(df, x="data", y="valor", title=f"Evolução da categoria {categoria}")
+    return fig
+
+
+==================================================
+FILE: .\v1 - only streamlit\pages\1_📄_Dados.py
+==================================================
+import streamlit as st
+from data.loader import carregar_dados
+
+st.title("📄 Dados detalhados")
+
+df = carregar_dados()
+
+# reaproveita filtro da sessão
+categoria = st.session_state.get("categoria")
+
+if categoria:
+    df = df[df["categoria"] == categoria]
+    st.caption(f"Categoria selecionada: {categoria}")
+else:
+    st.caption("Nenhum filtro aplicado")
+
+st.dataframe(df)
+
+
+==================================================
+FILE: .\v1 - only streamlit\pages\2_✏️_Gerenciar.py
+==================================================
+import time
+
+import streamlit as st
+from data.crud import (
+    atualizar_registro,
+    deletar_registro,
+    inserir_registro,
+)
+from data.loader import carregar_dados
+
+st.title("✏️ Gerenciar registros")
+
+df = carregar_dados()
+
+# ======================
+# ➕ INSERIR
+# ======================
+st.subheader("➕ Novo registro")
+
+with st.form("form_inserir", clear_on_submit=False):
+    data = st.date_input("Data", format="DD/MM/YYYY")
+    categoria = st.selectbox("Categoria", options=df["categoria"].unique())
+    valor = st.number_input("Valor", step=1)
+
+    submitted = st.form_submit_button("Inserir", type="primary")
+
+if submitted:
+    erros = []
+
+    if not categoria.strip():
+        erros.append("A categoria é obrigatória.")
+
+    if valor is None:
+        erros.append("O valor é obrigatório.")
+
+    if erros:
+        for erro in erros:
+            st.error(erro, icon=":material/error:")
+    else:
+        inserir_registro(str(data), categoria, int(valor))
+        st.cache_data.clear()
+        st.toast("Registro adicionado com sucesso.", icon=":material/check:")
+        time.sleep(5)
+        st.rerun()
+
+# ======================
+# ✏️ EDITAR / 🗑️ EXCLUIR
+# ======================
+st.subheader("✏️ Editar / 🗑️ Excluir")
+
+# 🔍 BUSCA REGISTROS =========
+
+# st.subheader("🔍 Buscar registro")
+
+
+def on_busca_change():
+    st.session_state.busca = st.session_state.busca_input
+
+
+def limpar_busca():
+    st.session_state.busca = ""
+    st.session_state.busca_input = ""
+
+
+# inicialização
+if "busca" not in st.session_state:
+    st.session_state.busca = ""
+
+if "busca_input" not in st.session_state:
+    st.session_state.busca_input = st.session_state.busca
+
+st.markdown(
+    """
+    <style>
+    /* container da busca */
+    div[data-testid="stVerticalBlock"]:has(> div > div > input[aria-label="🔍 Buscar registro"]) {
+        background-color: rgba(0, 123, 255, 0.08);
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 16px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+with st.chat_message(
+    "user",
+    avatar='<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g id="SVGRepo_bgCarrier" stroke-width="0"></g><g id="SVGRepo_tracerCarrier" stroke-linecap="round" stroke-linejoin="round"></g><g id="SVGRepo_iconCarrier"> <rect width="24" height="24" fill="transparent"></rect><circle cx="12" cy="12" r="9" fill="#fff" /><path fill-rule="evenodd" clip-rule="evenodd" d="M2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12ZM9 11.5C9 10.1193 10.1193 9 11.5 9C12.8807 9 14 10.1193 14 11.5C14 12.8807 12.8807 14 11.5 14C10.1193 14 9 12.8807 9 11.5ZM11.5 7C9.01472 7 7 9.01472 7 11.5C7 13.9853 9.01472 16 11.5 16C12.3805 16 13.202 15.7471 13.8957 15.31L15.2929 16.7071C15.6834 17.0976 16.3166 17.0976 16.7071 16.7071C17.0976 16.3166 17.0976 15.6834 16.7071 15.2929L15.31 13.8957C15.7471 13.202 16 12.3805 16 11.5C16 9.01472 13.9853 7 11.5 7Z" fill="#f74a36"></path></g></svg>',
+):
+    _, col_busca, col_limpar, _ = st.columns(
+        [0.5, 18, 2, 0.1], vertical_alignment="bottom"
+    )
+
+    with col_busca:
+        st.text_input(
+            "Buscar registro",
+            key="busca_input",
+            placeholder="Categoria, valor ou data (ex: A, 50, 01/2025)",
+            on_change=on_busca_change,
+        )
+
+    with col_limpar:
+        st.button("❌", help="Limpar busca", on_click=limpar_busca)
+
+
+busca = st.session_state.busca.strip().lower()
+
+df_filtrado = df.copy()
+
+if busca:
+    df_filtrado = df[
+        df["id"].astype(str).str.contains(busca)
+        | df["categoria"].str.lower().str.contains(busca)
+        | df["valor"].astype(str).str.contains(busca)
+        | df["data"].dt.strftime("%d/%m/%Y").str.contains(busca)
+    ]
+
+if df_filtrado.empty:
+    st.warning("Nenhum registro encontrado.")
+    st.stop()
+
+
+def formatar_registro(row):
+    return (
+        f"[ ID {row['id']}] ▶ Data: {row['data'].strftime('%d/%m/%Y')} , "
+        f"Categoria: {row['categoria']} , "
+        f"Valor: {row['valor']}"
+    )
+
+
+opcoes = {row["id"]: formatar_registro(row) for _, row in df_filtrado.iterrows()}
+
+
+registro_id = st.selectbox(
+    "Selecione o registro",
+    options=list(opcoes.keys()),
+    format_func=lambda x: opcoes[x],
+)
+
+registro = df_filtrado[df_filtrado["id"] == registro_id].iloc[0]
+
+with st.form("form_editar", clear_on_submit=True):
+    data_edit = st.date_input("Data", registro["data"], format="DD/MM/YYYY")
+    categoria_edit = st.text_input("Categoria", registro["categoria"])
+    valor_edit = st.number_input("Valor", value=int(registro["valor"]), step=1)
+
+    col1, col2 = st.columns(2)
+    salvar = col1.form_submit_button("Salvar alterações", type="primary")
+    excluir = col2.form_submit_button("Excluir registro")
+
+if salvar:
+    atualizar_registro(
+        registro_id,
+        str(data_edit),
+        categoria_edit,
+        int(valor_edit),
+    )
+    st.cache_data.clear()
+    st.toast("Registro atualizado com sucesso.", icon=":material/check:")
+    time.sleep(5)
+    st.rerun()
+
+
+@st.dialog("⚠️ Confirmar exclusão")
+def confirmar_exclusao(id_):
+    st.error("Essa ação não pode ser desfeita.")
+    st.write("Você está prestes a excluir o registro:")
+    st.write(f"{opcoes[registro_id]}")
+    st.write("")
+
+    col1, col2 = st.columns(2)
+
+    if col1.button("Cancelar"):
+        st.rerun()
+
+    if col2.button("Excluir definitivamente"):
+        deletar_registro(id_)
+        st.cache_data.clear()
+        st.error("Registro excluído.")
+        time.sleep(3)
+        limpar_busca()
+        st.rerun()
+
+
+if excluir:
+    confirmar_exclusao(registro_id)
