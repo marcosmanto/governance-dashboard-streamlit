@@ -22,6 +22,7 @@ painel_dados_chatgpt_tutorial/
 │  ├─ V001__create_registros.py
 │  ├─ V002__auditoria_registros.py
 │  └─ V003__unicidade_upsert_e_wal.py
+│  └─ ... (até V014)
 └─ migrate.py
 ```
 
@@ -116,6 +117,57 @@ python migrate.py --db ./data/dados.db --migrations ./migrations --init-if-missi
 - Impõe unicidade com **índice único** `UNIQUE(data, categoria)`.
 - Cria **view** `vw_registros_upsert` + **gatilho `INSTEAD OF INSERT`** para permitir **upsert** via `INSERT` na view.
 - Ativa **WAL** e `synchronous = NORMAL` (aplicado fora de transação para persistir).
+
+### V004 — `create_auditoria` (SQL)
+
+- Cria a tabela central de `auditoria` para registrar eventos de sistema (login, logout, alterações de dados).
+- Estrutura base para o registro de *quem, quando, onde e o quê*.
+
+### V005 — `sessions` (SQL)
+
+- Cria a tabela `user_sessions` para gestão de sessões stateful (com suporte a revogação pelo servidor).
+- Permite controle de múltiplos dispositivos e logout remoto.
+
+### V006 — `add_audit_hash_chain` (SQL)
+
+- Adiciona as colunas `prev_hash` e `event_hash` na tabela de auditoria.
+- Habilita a **Cadeia Criptográfica** (Blockchain-style) para garantir imutabilidade e detecção de violação.
+
+### V007 — `users_table` (SQL)
+
+- Cria a tabela `users` para autenticação local (username, password_hash, role).
+
+### V008 — `must_change_password` (SQL)
+
+- Adiciona flag para forçar o usuário a trocar de senha no próximo login.
+
+### V009 — `password_reset_tokens` (SQL)
+
+- Cria tabela para armazenar hashes de tokens de recuperação de senha.
+- Suporte a expiração e uso único (anti-replay).
+
+### V010 — `password_changed_at` (SQL)
+
+- Adiciona timestamp da última troca de senha no usuário.
+- Crítico para invalidar tokens JWT antigos quando a senha é alterada (rotação de chaves).
+
+### V011 — `password_expiration` (SQL)
+
+- Adiciona data de expiração da senha (`password_expires_at`).
+- Implementa política de rotação periódica de credenciais.
+
+### V012 — `users_email` (SQL)
+
+- Adiciona campo de e-mail único para usuários (necessário para recuperação de senha).
+
+### V013 — `users_profile_fields` (SQL)
+
+- Adiciona campos de perfil: `name`, `fullname` e `avatar_path`.
+
+### V014 — `audit_integrity` (SQL)
+
+- Cria tabela singleton `audit_integrity` para armazenar o status global de segurança.
+- Usada pelo **Circuit Breaker** para bloquear escritas em caso de violação da auditoria.
 
 > **Sobre `origem` no upsert da view:** a versão original da V003 definia `origem` como `'upsert'` quando ausente. Caso você prefira **manter a origem anterior** quando não enviar `origem` no upsert, ajuste o gatilho para enviar `NEW.origem` (sem `COALESCE('upsert')`) e usar `COALESCE(excluded.origem, registros.origem)` no `DO UPDATE`. Podemos disponibilizar uma V004 de ajuste se desejar.
 

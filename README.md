@@ -1,243 +1,305 @@
-# README
+# 📘 Governance Dashboard
 
-## Execução do projeto (Windows / Linux / macOS)
+## 🧠 Visão Geral
 
-Para executar o **backend (FastAPI/Uvicorn)** e o **frontend (Streamlit)** a partir da **pasta raiz do projeto** (ex.: `.../painel_dados_chatgpt_tutorial` **ou** a pasta **acima** dela), defina o `PYTHONPATH` para que os imports absolutos (`backend.*`, `frontend.*`) funcionem corretamente.
+O **Governance Dashboard** é uma plataforma fullstack (FastAPI + Streamlit) voltada para:
 
-> **Por quê?** O Python procura módulos com base no `sys.path`. Ao rodar scripts a partir de caminhos diferentes, pode faltar o diretório raiz do projeto no `PYTHONPATH`, causando erros como `ModuleNotFoundError: No module named 'frontend'`.
+- Governança de dados
+- Trilha de auditoria imutável
+- Controle avançado de sessões
+- Segurança institucional
+- Integridade criptográfica verificável
 
-### 1) Windows (Prompt de Comando / CMD)
+Arquitetura simplificada:
 
-Abra **dois terminais** (ou abas):
-
-**Backend (Uvicorn):**
-
-```bat
-cd caminho\para\pasta-acima-ou-raiz\do\projeto
-set PYTHONPATH=%CD% && uvicorn backend.main:app --reload
+```
+Streamlit → FastAPI → SQLite (WAL)
+                     ↓
+               Auditoria Hash Chain
+                     ↓
+            Integrity Guard (Auto-Lock)
 ```
 
-**Frontend (Streamlit):**
+---
 
-```bat
-cd caminho\para\pasta-acima-ou-raiz\do\projeto
-set "PYTHONPATH=%CD%" && streamlit run frontend\Home.py
-```
+# 🚀 Execução do Projeto
 
-> Dica (PowerShell):
->
-> ```powershell
-> $env:PYTHONPATH = (Get-Location).Path
-> uvicorn backend.main:app --reload
-> # Em outra aba
-> $env:PYTHONPATH = (Get-Location).Path
-> streamlit run frontend/Home.py
-> ```
+## Execução (Windows / Linux / macOS)
 
-### 2) Linux / macOS (bash/zsh)
-
-Também em **dois terminais**:
-
-**Backend (Uvicorn):**
-
-```bash
-cd /caminho/para/pasta-acima-ou-raiz/do/projeto
-export PYTHONPATH="$PWD" && uvicorn backend.main:app --reload
-```
-
-**Frontend (Streamlit):**
-
-```bash
-cd /caminho/para/pasta-acima-ou-raiz/do/projeto
-export PYTHONPATH="$PWD" && streamlit run frontend/app.py
-```
-
-### Observações
-
-- Execute **backend** e **frontend** simultaneamente (dois terminais), pois o Streamlit pode chamar a API do FastAPI.
-- Se preferir, você pode evitar `PYTHONPATH` com **imports relativos** no `frontend/app.py` (ex.: `from .loaders.registros import ...`), mas manter o `PYTHONPATH` facilita quando há **múltiplos pacotes** (`backend/`, `frontend/`, `migrations/`).
-- Se aparecer `ModuleNotFoundError`, verifique:
-  1. Você está na **pasta correta**? (`cd` para a raiz do projeto ou **um nível acima** dela, conforme os comandos acima).
-  2. O `PYTHONPATH` realmente aponta para a pasta **raiz** do projeto (`echo %PYTHONPATH%` no CMD / `echo $PYTHONPATH` no bash)?
-- Portas padrão: Streamlit `http://localhost:8501`, FastAPI/Uvicorn `http://127.0.0.1:8000`.
-
-## Scripts prontos (Windows / Linux / macOS)
-
-A partir da **raiz do projeto**, você pode usar os scripts em `./scripts`:
+Execute backend e frontend em terminais separados.
 
 ### Windows (CMD)
 
-- Backend: `scripts\start_backend.bat`
-- Frontend: `scripts\start_frontend.bat`
-- **Tudo junto (duas janelas):** `scripts\start_all_windows.bat`
+Backend:
 
-### Linux/macOS (bash/zsh)
-
-Primeiro, dê permissão de execução (uma vez):
-
-```bash
-chmod +x scripts/*.sh
+```
+set PYTHONPATH=%CD% && uvicorn backend.main:app --reload
 ```
 
-Depois execute:
+Frontend:
 
-- Backend: `./scripts/start_backend.sh`
-- Frontend: `./scripts/start_frontend.sh`
-- **Tudo junto:** `./scripts/start_all.sh`
+```
+set PYTHONPATH=%CD% && streamlit run frontend/Home.py
+```
 
-> Todos os scripts ajustam `PYTHONPATH` para a raiz do projeto antes de iniciar os serviços.
+---
 
-## ⚙️ Configuração do Ambiente (.env)
+### Linux/macOS
 
-Este projeto utiliza variáveis de ambiente centralizadas para configuração
-de segurança, banco de dados e tempo de expiração de sessões.
+Backend:
 
-### 📁 Arquivo `.env`
+```
+export PYTHONPATH="$PWD" && uvicorn backend.main:app --reload
+```
 
-Crie um arquivo `.env` **na raiz do projeto** (mesmo nível de `backend/` e `frontend/`).
+Frontend:
+
+```
+export PYTHONPATH="$PWD" && streamlit run frontend/Home.py
+```
+
+Portas padrão:
+
+- Backend: http://127.0.0.1:8000
+- Frontend: http://localhost:8501
+
+---
+
+# 🗄️ Sistema de Migrações
+
+O projeto possui um sistema próprio de versionamento de banco (`migrate.py`).
+
+Cada migração:
+
+- É versionada (`V001`, `V002`, etc.)
+- Possui checksum SHA-256
+- É registrada na tabela `schema_migrations`
+- Gera backup automático antes de aplicar
+
+## Inicializar banco do zero
+
+```
+python migrate.py --db ./data/dados.db --migrations ./migrations --init-if-missing
+```
+
+Isso:
+
+1. Cria a pasta `data/` se necessário
+2. Cria o banco SQLite
+3. Aplica todas as migrações
+4. Registra histórico
+
+## Listar migrações
+
+```
+python migrate.py --db ./data/dados.db --migrations ./migrations --list
+```
+
+## Dry-run
+
+```
+python migrate.py --db ./data/dados.db --migrations ./migrations --dry-run
+```
+
+---
+
+# 🔐 Segurança da Aplicação
+
+## 🛡️ Rate Limiting (Proteção contra Força Bruta)
+
+O backend utiliza a biblioteca **slowapi** para proteger rotas críticas:
+
+Rotas protegidas:
+
+- `/login`
+- `/refresh`
+
+Limite configurado:
+
+```
+5 requisições por minuto por IP
+```
+
+Se excedido:
+
+- Retorna HTTP 429 (Too Many Requests)
+
+Isso protege contra ataques de força bruta.
+
+---
+
+## 🔑 Autenticação e Sessões
+
+O sistema implementa:
+
+- Access Token de curta duração
+- Refresh Token
+- Sessões persistidas em banco
+- Revogação individual de sessão
+- Revogação global
+- Expiração automática por idade da senha
+- Aviso de senha prestes a expirar
+- Forçar troca de senha
+
+---
+
+# 🔁 Reset de Senha Seguro
+
+Fluxo:
+
+1. `/forgot-password` gera token criptograficamente seguro
+2. Apenas o hash do token é persistido
+3. Token possui expiração
+4. Token é de uso único
+5. Evento é auditado
+
+## 🧪 Comportamento em Ambiente DEV
+
+Quando `ENV=dev`:
+
+- O sistema **não envia e-mail real**
+- O token de reset é exibido/logado no console do backend
+
+Isso permite testar o fluxo localmente sem SMTP real.
+
+Para produção:
+
+- Configure SMTP no `.env`
+- O token será enviado por e-mail real
+
+---
+
+# 🔐 Auditoria e Integridade Criptográfica
+
+O sistema implementa uma cadeia de hash estilo blockchain.
+
+Cada evento contém:
+
+- `prev_hash`
+- `event_hash`
+- Payload canonicalizado (JSON ordenado)
+- SHA-256 determinístico
+
+Qualquer modificação retroativa invalida toda a cadeia subsequente.
+
+---
+
+# 🧪 Verificação de Integridade
+
+Endpoint administrativo:
+
+```
+GET /admin/audit/verify
+```
+
+Ele:
+
+- Recalcula toda a cadeia
+- Detecta adulterações
+- Detecta quebra de encadeamento
+- Atualiza tabela `audit_integrity`
+
+---
+
+# 🛡️ Bloqueio Automático (Integrity Guard)
+
+O sistema possui um mecanismo de proteção ativa.
+
+Funcionamento:
+
+1. Se a verificação detectar violação:
+   - `status = VIOLATED` na tabela `audit_integrity`
+2. O middleware `IntegrityGuardMiddleware` intercepta:
+   - POST
+   - PUT
+   - DELETE
+   - PATCH
+3. Retorna:
+
+```
+HTTP 423 Locked
+```
+
+Mensagem:
+
+```
+SISTEMA BLOQUEADO: Violação de integridade detectada na auditoria.
+```
+
+## Rotas permitidas mesmo em bloqueio
+
+- `/login`
+- `/refresh`
+- `/logout`
+
+Isso permite que o administrador entre e investigue o incidente.
+
+---
+
+# 👤 Gestão de Usuários
+
+- Perfil editável
+- Upload de avatar
+- Listagem de sessões ativas
+- Revogação remota de sessões
+- Limpeza de sessões expiradas
+- Política de rotação de senha
+
+---
+
+# 🧱 Banco de Dados
+
+- SQLite com WAL habilitado
+- Índices estratégicos
+- Upsert via VIEW + trigger
+- Backup automático nas migrações
+- Verificação de checksum de migrações
+
+---
+
+# ⚙️ Variáveis de Ambiente (.env)
 
 Exemplo:
 
-```env
-# Ambiente
+```
 ENV=dev
 
-# JWT
 JWT_SECRET=uma-chave-secreta-forte
 JWT_ALGORITHM=HS256
 
-# Expiração de tokens
 ACCESS_TOKEN_EXPIRE_MINUTES=15
 REFRESH_TOKEN_EXPIRE_DAYS=7
 
-# Database
 DB_BACKEND=sqlite
 DB_DSN=./data/dados.db
 ```
 
-## 🔐 Auditoria e Governança de Dados
+---
 
-Este projeto implementa um **sistema de auditoria avançado**, projetado para **ambientes institucionais**, com foco em **integridade, rastreabilidade e não-repúdio**.
+# 🏛️ Nível Arquitetural
+
+Este projeto evoluiu de um simples dashboard para:
+
+**Plataforma de Governança com Trilha Imutável e Reação Automática a Violação**
+
+Recursos implementados:
+
+- Auditoria criptográfica encadeada
+- Verificação de integridade
+- Circuit breaker automático
+- Rate limiting contra força bruta
+- Reset de senha seguro
+- Controle avançado de sessões
+- Sistema próprio de migrações
 
 ---
 
-### 🧾 Trilha de Auditoria Completa (Before / After)
+# 📦 Dependências Principais
 
-Toda operação de **mutação de dados** (`POST`, `PUT`, `DELETE`) gera automaticamente um evento de auditoria contendo:
-
-- Usuário responsável
-- Perfil (role)
-- Timestamp em UTC
-- Ação executada
-- Recurso afetado
-- Identificador do registro
-- **Estado anterior (`payload_before`)**
-- **Estado posterior (`payload_after`)**
-- Endpoint e método HTTP
-
-Isso permite reconstruir **exatamente o que mudou, quando e por quem**.
-
----
-
-### 🔗 Cadeia Criptográfica de Auditoria (Blockchain-style)
-
-Os eventos de auditoria são protegidos por uma **cadeia de hash SHA-256**, inspirada em conceitos de blockchain:
-
-- Cada evento possui um `event_hash`
-- Cada evento referencia o `prev_hash` do evento anterior
-- O hash é calculado a partir de:
-  - metadados do evento
-  - payload _before / after_
-  - hash do evento anterior
-
-📌 **Qualquer alteração retroativa em um evento invalida toda a cadeia subsequente.**
-
----
-
-### 🧪 Verificação de Integridade
-
-O backend expõe um endpoint administrativo que:
-
-- Recalcula toda a cadeia de hash
-- Detecta:
-  - eventos adulterados
-  - remoções
-  - inserções fora de ordem
-- Identifica exatamente:
-  - o ponto de falha
-  - o evento comprometido
-  - o motivo da inconsistência
-
----
-
-### 🖥️ Painel Visual de Integridade (Streamlit)
-
-O frontend possui uma tela dedicada de **Integridade da Auditoria**, com:
-
-- Indicador visual de status:
-  - 🟢 Cadeia íntegra
-  - 🔴 Violação detectada
-- Exibição do ponto exato de falha
-- Botão para **reexecutar a verificação**
-- Exportação dos resultados para análise externa
-
----
-
-### 🚨 Detecção de Violação e Evidência
-
-O sistema foi projetado para:
-
-- Detectar adulterações automaticamente
-- Gerar evidência técnica verificável
-- Servir como base para:
-  - auditorias internas
-  - investigações
-  - compliance regulatório
-
----
-
-### 🏛️ Princípios Atendidos
-
-A arquitetura de auditoria atende aos seguintes princípios:
-
-- Imutabilidade dos registros
-- Não-repúdio
-- Rastreabilidade completa
-- Evidência forense
-- Governança e accountability
-
----
-
-### ⚠️ Importante
-
-- **Eventos de auditoria nunca são alterados**
-- Qualquer modificação de dados gera **um novo evento**
-- O passado permanece imutável e verificável
-
----
-
-### 📌 Casos de Uso
-
-- Governança de dados
-- Ambientes regulados
-- Sistemas administrativos
-- Trilhas de auditoria institucionais
-- Estudos de arquitetura segura
-
-## 🔐 Reset de senha
-
-O sistema implementa um fluxo seguro de redefinição de senha:
-
-- Token criptograficamente seguro
-- Apenas hash do token é persistido
-- Token com expiração
-- Uso único
-- `/password-reset/cleanup` endpoint para limpeza de tokens de reset de senha expirados ou usados
-- Auditoria completa dos eventos
-
-Fluxo:
-
-1. `/forgot-password` gera token
-2. Token é enviado ao usuário
-3. `/reset-password` redefine senha
-4. Evento auditado
+- FastAPI
+- Streamlit
+- slowapi
+- python-jose
+- passlib (bcrypt)
+- SQLite
+- Uvicorn

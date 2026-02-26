@@ -8,7 +8,7 @@ from frontend.services.navigation import set_current_page
 
 set_current_page(Page.INTEGRIDADE)
 
-api, user = base_layout("Integridade da Auditoria", "🔐")
+api, user = base_layout("Integridade da Auditoria", "🔐", wide=True)
 
 # =====================
 # 🔐 Segurança

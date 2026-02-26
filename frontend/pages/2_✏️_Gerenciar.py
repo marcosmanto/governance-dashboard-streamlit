@@ -63,10 +63,13 @@ if submitted:
 
             handle_api_error(resp)
 
-            st.cache_data.clear()
-            st.toast("Registro adicionado com sucesso.", icon=":material/check:")
-            time.sleep(5)
-            st.rerun()
+            if resp.status_code == 201:
+                st.cache_data.clear()
+                st.toast("Registro adicionado com sucesso.", icon=":material/check:")
+                time.sleep(5)
+                st.rerun()
+            else:
+                st.error(f"Erro ao inserir: {resp.text}")
         except requests.exceptions.HTTPError as e:
             st.error(f"Erro da API ({e.response.status_code})")
         except requests.exceptions.ConnectionError:
@@ -171,7 +174,7 @@ registro_id = st.selectbox(
 
 registro = df_filtrado[df_filtrado["id"] == registro_id].iloc[0]
 
-with st.form("form_editar", clear_on_submit=True):
+with st.form("form_editar", clear_on_submit=False):
     data_edit = st.date_input("Data", registro["data"], format="DD/MM/YYYY")
     categoria_edit = st.text_input("Categoria", registro["categoria"])
     valor_edit = st.number_input("Valor", value=int(registro["valor"]), step=1)
@@ -192,10 +195,13 @@ if salvar:
             },
         )
         handle_api_error(resp)
-        st.cache_data.clear()
-        st.toast("Registro atualizado com sucesso.", icon=":material/check:")
-        time.sleep(5)
-        st.rerun()
+        if resp.status_code == 200:
+            st.cache_data.clear()
+            st.toast("Registro atualizado com sucesso.", icon=":material/check:")
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error(f"Erro ao atualizar: {resp.text}")
     except Exception as e:
         st.error(f"Erro ao atualizar: {e}")
 
@@ -216,11 +222,14 @@ def confirmar_exclusao(id_):
         try:
             resp = api.deletar_registro(id_)
             handle_api_error(resp)
-            st.cache_data.clear()
-            st.error("Registro excluído.")
-            time.sleep(3)
-            limpar_busca()
-            st.rerun()
+            if resp.status_code == 200:
+                st.cache_data.clear()
+                st.error("Registro excluído.")
+                time.sleep(3)
+                limpar_busca()
+                st.rerun()
+            else:
+                st.error(f"Erro ao excluir: {resp.text}")
         except Exception as e:
             st.error(f"Erro ao excluir: {e}")
 

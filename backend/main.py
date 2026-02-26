@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
+from backend.audit.integrity_middleware import IntegrityGuardMiddleware
 from backend.audit.middleware import HeaderInjectionMiddleware
 from backend.audit.service import registrar_evento
 from backend.audit.verify import verificar_integridade_auditoria
@@ -66,6 +67,8 @@ if settings.ENV == "dev":
 
 register_rate_limit_exception(app)
 
+# 🛡️ Middleware de Proteção (Executa antes do HeaderInjection)
+app.add_middleware(IntegrityGuardMiddleware)
 app.add_middleware(HeaderInjectionMiddleware)
 # 🔐 Rotas administrativas
 app.include_router(admin_router)

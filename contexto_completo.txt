@@ -1195,7 +1195,8 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from backend.audit.middleware import AuditMiddleware
+from backend.audit.integrity_middleware import IntegrityGuardMiddleware
+from backend.audit.middleware import HeaderInjectionMiddleware
 from backend.audit.service import registrar_evento
 from backend.audit.verify import verificar_integridade_auditoria
 from backend.auth.dependencies import get_current_user
@@ -1219,7 +1220,7 @@ from backend.crud import (
     # deletar_registro,
     listar_registros,
     obter_registro_por_id,
-    # inserir_registro,
+    query,
     upsert_registro,
 )
 from backend.crud_auditoria import listar_auditoria
@@ -1253,7 +1254,9 @@ if settings.ENV == "dev":
 
 register_rate_limit_exception(app)
 
-app.add_middleware(AuditMiddleware)
+# 🛡️ Middleware de Proteção (Executa antes do HeaderInjection)
+app.add_middleware(IntegrityGuardMiddleware)
+app.add_middleware(HeaderInjectionMiddleware)
 # 🔐 Rotas administrativas
 app.include_router(admin_router)
 # 🔓 Rotas públicas
@@ -1268,12 +1271,39 @@ def get_registros():  # user: User = Depends(get_current_user)):
 @app.post("/registros", status_code=201)
 def post_registro(
     registro: RegistroIn,
+    request: Request,
     user: UserContext = Depends(get_current_user),
 ):
     require_role("editor", "admin")(user)
     try:
         # inserir_registro(registro)
         upsert_registro(registro)
+
+        # 🔍 Recuperar o ID do registro inserido/atualizado para auditoria
+        # Como é um UPSERT via view, não temos o ID direto, precisamos consultar.
+        conn = connect()
+        try:
+            rows = query(
+                conn,
+                "SELECT id FROM registros WHERE data = :data AND categoria = :cat",
+                {"data": registro.data, "cat": registro.categoria},
+            )
+            resource_id = rows[0]["id"] if rows else None
+        finally:
+            conn.close()
+
+        registrar_evento(
+            username=user.username,
+            role=user.role,
+            action="UPSERT",
+            resource="registros",
+            resource_id=resource_id,
+            payload_before=None,  # Upsert é complexo de pegar o "antes" sem custo alto
+            payload_after=registro.model_dump(),
+            endpoint=request.url.path,
+            method=request.method,
+        )
+
         return {"message": "Registro inserido/atualizado (UPSERT) com sucesso"}
     except DuplicateKeyError:
         # Só ocorreria se você usar INSERT direto na tabela sem view, por exemplo.
@@ -1543,6 +1573,31 @@ FILE: .\backend\__init__.py
 
 
 ==================================================
+FILE: .\backend\audit\guard.py
+==================================================
+from backend.db import connect, query
+
+
+def is_system_locked() -> bool:
+    """
+    Verifica se o sistema está em modo de bloqueio (Read-Only)
+    devido a violação de auditoria.
+    """
+    conn = connect()
+    try:
+        rows = query(conn, "SELECT status FROM audit_integrity WHERE id = 1")
+        if rows and rows[0]["status"] != "OK":
+            return True
+        return False
+    except Exception:
+        # Se a tabela não existir ou der erro, assume sistema aberto (fail-open)
+        # para não travar antes das migrações rodarem.
+        return False
+    finally:
+        conn.close()
+
+
+==================================================
 FILE: .\backend\audit\hash.py
 ==================================================
 import hashlib
@@ -1582,6 +1637,34 @@ def compute_event_hash(
 
 
 ==================================================
+FILE: .\backend\audit\integrity_middleware.py
+==================================================
+from fastapi import Request, status
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from backend.audit.guard import is_system_locked
+
+
+class IntegrityGuardMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # 🔓 Permitir autenticação mesmo em bloqueio (para o admin entrar e corrigir)
+        if request.url.path in ["/login", "/refresh", "/logout"]:
+            return await call_next(request)
+
+        # Se for operação de escrita (POST, PUT, DELETE, PATCH)
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            if is_system_locked():
+                return JSONResponse(
+                    status_code=status.HTTP_423_LOCKED,
+                    content={
+                        "detail": "SISTEMA BLOQUEADO: Violação de integridade detectada na auditoria."
+                    },
+                )
+        return await call_next(request)
+
+
+==================================================
 FILE: .\backend\audit\middleware.py
 ==================================================
 import json
@@ -1591,11 +1674,10 @@ from fastapi import Request
 from fastapi.responses import Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from backend.audit.service import registrar_evento
 from backend.models import UserContext
 
 
-class AuditMiddleware(BaseHTTPMiddleware):
+class HeaderInjectionMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
 
@@ -1612,29 +1694,6 @@ class AuditMiddleware(BaseHTTPMiddleware):
                     "password_expiring_soon": user.password_expiring_soon,
                     "password_days_remaining": user.password_days_remaining,
                 }
-            )
-
-        # Só audita mutações bem-sucedidas
-        if request.method not in ("POST", "PUT", "DELETE"):
-            return response
-
-        if response.status_code >= 400:
-            return response
-
-        if not user:
-            return response
-
-        if request.method in ("POST", "GET"):
-            registrar_evento(
-                username=user.username,
-                role=user.role,
-                action=request.method,
-                resource="registros",
-                resource_id=None,  # ajustaremos nos endpoints
-                payload_before=None,
-                payload_after=None,
-                endpoint=str(request.url.path),
-                method=request.method,
             )
 
         return response
@@ -1687,12 +1746,14 @@ def registrar_evento(
     try:
         # 1️⃣ Normalizar payloads ANTES (string única e determinística) e gerar timestamp
         payload_before_json = (
-            json.dumps(payload_before, sort_keys=True, ensure_ascii=False)
+            json.dumps(payload_before, sort_keys=True, ensure_ascii=False, default=str)
             if payload_before
             else None
         )
         payload_after_json = (
-            json.dumps(payload_after, sort_keys=True, ensure_ascii=False) if payload_after else None
+            json.dumps(payload_after, sort_keys=True, ensure_ascii=False, default=str)
+            if payload_after
+            else None
         )
 
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -1779,8 +1840,10 @@ def registrar_evento(
 ==================================================
 FILE: .\backend\audit\verify.py
 ==================================================
+from datetime import datetime, timezone
+
 from backend.audit.hash import compute_event_hash
-from backend.db import query
+from backend.db import execute, query
 
 
 def verificar_integridade_auditoria(conn):
@@ -1815,6 +1878,13 @@ def verificar_integridade_auditoria(conn):
 
     prev_hash = None
 
+    # Inicializa variáveis de estado (assumindo sucesso por padrão)
+    status = "OK"
+    violated_at = None
+    violated_event_id = None
+    reason = None
+    broken_result = None
+
     for row in rows:
         recalculated_hash = compute_event_hash(
             timestamp=row["timestamp"],
@@ -1832,25 +1902,60 @@ def verificar_integridade_auditoria(conn):
 
         # 1️⃣ Hash do próprio evento foi adulterado
         if recalculated_hash != row["event_hash"]:
-            return {
+            broken_result = {
                 "valid": False,
                 "reason": "event_hash mismatch",
                 "broken_at_id": row["id"],
                 "expected": recalculated_hash,
                 "found": row["event_hash"],
             }
+            status = "VIOLATED"
+            violated_at = datetime.now(timezone.utc).isoformat()
+            violated_event_id = row["id"]
+            reason = "event_hash mismatch"
+            break
 
         # 2️⃣ Cadeia quebrada (prev_hash não bate)
         if row["prev_hash"] != prev_hash:
-            return {
+            broken_result = {
                 "valid": False,
                 "reason": "prev_hash mismatch",
                 "broken_at_id": row["id"],
                 "expected_prev_hash": prev_hash,
                 "found_prev_hash": row["prev_hash"],
             }
+            status = "VIOLATED"
+            violated_at = datetime.now(timezone.utc).isoformat()
+            violated_event_id = row["id"]
+            reason = "prev_hash mismatch"
+            break
 
         prev_hash = row["event_hash"]
+
+    # 3️⃣ Atualizar status global de integridade
+    execute(
+        conn,
+        """
+        UPDATE audit_integrity
+           SET status = :status,
+               last_check_at = :now,
+               violated_at = :violated_at,
+               violated_event_id = :violated_event_id,
+               reason = :reason
+         WHERE id = 1
+        """,
+        {
+            "status": status,
+            "now": datetime.now(timezone.utc).isoformat(),
+            "violated_at": violated_at,
+            "violated_event_id": violated_event_id,
+            "reason": reason,
+        },
+    )
+    conn.commit()
+
+    if broken_result:
+        return broken_result
 
     return {
         "valid": True,
@@ -4386,10 +4491,13 @@ if submitted:
 
             handle_api_error(resp)
 
-            st.cache_data.clear()
-            st.toast("Registro adicionado com sucesso.", icon=":material/check:")
-            time.sleep(5)
-            st.rerun()
+            if resp.status_code == 201:
+                st.cache_data.clear()
+                st.toast("Registro adicionado com sucesso.", icon=":material/check:")
+                time.sleep(5)
+                st.rerun()
+            else:
+                st.error(f"Erro ao inserir: {resp.text}")
         except requests.exceptions.HTTPError as e:
             st.error(f"Erro da API ({e.response.status_code})")
         except requests.exceptions.ConnectionError:
@@ -4494,7 +4602,7 @@ registro_id = st.selectbox(
 
 registro = df_filtrado[df_filtrado["id"] == registro_id].iloc[0]
 
-with st.form("form_editar", clear_on_submit=True):
+with st.form("form_editar", clear_on_submit=False):
     data_edit = st.date_input("Data", registro["data"], format="DD/MM/YYYY")
     categoria_edit = st.text_input("Categoria", registro["categoria"])
     valor_edit = st.number_input("Valor", value=int(registro["valor"]), step=1)
@@ -4515,10 +4623,13 @@ if salvar:
             },
         )
         handle_api_error(resp)
-        st.cache_data.clear()
-        st.toast("Registro atualizado com sucesso.", icon=":material/check:")
-        time.sleep(5)
-        st.rerun()
+        if resp.status_code == 200:
+            st.cache_data.clear()
+            st.toast("Registro atualizado com sucesso.", icon=":material/check:")
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error(f"Erro ao atualizar: {resp.text}")
     except Exception as e:
         st.error(f"Erro ao atualizar: {e}")
 
@@ -4539,11 +4650,14 @@ def confirmar_exclusao(id_):
         try:
             resp = api.deletar_registro(id_)
             handle_api_error(resp)
-            st.cache_data.clear()
-            st.error("Registro excluído.")
-            time.sleep(3)
-            limpar_busca()
-            st.rerun()
+            if resp.status_code == 200:
+                st.cache_data.clear()
+                st.error("Registro excluído.")
+                time.sleep(3)
+                limpar_busca()
+                st.rerun()
+            else:
+                st.error(f"Erro ao excluir: {resp.text}")
         except Exception as e:
             st.error(f"Erro ao excluir: {e}")
 
@@ -4797,7 +4911,7 @@ from frontend.services.navigation import set_current_page
 
 set_current_page(Page.INTEGRIDADE)
 
-api, user = base_layout("Integridade da Auditoria", "🔐")
+api, user = base_layout("Integridade da Auditoria", "🔐", wide=True)
 
 # =====================
 # 🔐 Segurança
@@ -5508,6 +5622,14 @@ def handle_api_error(resp):
         st.error("Você não tem permissão para executar esta ação.")
         st.stop()
 
+    if resp.status_code == 423:
+        try:
+            detail = resp.json().get("detail", "Sistema bloqueado.")
+        except Exception:
+            detail = "Sistema bloqueado."
+        st.error(f"⛔ {detail}")
+        st.stop()
+
     if resp.status_code >= 500:
         st.error("Erro interno no servidor.")
         st.stop()
@@ -5934,6 +6056,22 @@ FILE: .\migrations\V013__users_profile_fields.sql
 ALTER TABLE users ADD COLUMN name TEXT;
 ALTER TABLE users ADD COLUMN fullname TEXT;
 ALTER TABLE users ADD COLUMN avatar_path TEXT;
+
+==================================================
+FILE: .\migrations\V014__audit_integrity.sql
+==================================================
+CREATE TABLE audit_integrity (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    status TEXT NOT NULL DEFAULT 'OK', -- 'OK' | 'VIOLATED'
+    last_check_at TEXT,
+    violated_at TEXT,
+    violated_event_id INTEGER,
+    reason TEXT
+);
+
+-- Inicializa com estado saudável
+INSERT INTO audit_integrity (id, status, last_check_at)
+VALUES (1, 'OK', CURRENT_TIMESTAMP);
 
 ==================================================
 FILE: .\scripts\start_all.sh

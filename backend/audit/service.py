@@ -42,12 +42,14 @@ def registrar_evento(
     try:
         # 1️⃣ Normalizar payloads ANTES (string única e determinística) e gerar timestamp
         payload_before_json = (
-            json.dumps(payload_before, sort_keys=True, ensure_ascii=False)
+            json.dumps(payload_before, sort_keys=True, ensure_ascii=False, default=str)
             if payload_before
             else None
         )
         payload_after_json = (
-            json.dumps(payload_after, sort_keys=True, ensure_ascii=False) if payload_after else None
+            json.dumps(payload_after, sort_keys=True, ensure_ascii=False, default=str)
+            if payload_after
+            else None
         )
 
         timestamp = datetime.now(timezone.utc).isoformat()

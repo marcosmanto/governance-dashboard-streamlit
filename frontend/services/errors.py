@@ -19,6 +19,14 @@ def handle_api_error(resp):
         st.error("Você não tem permissão para executar esta ação.")
         st.stop()
 
+    if resp.status_code == 423:
+        try:
+            detail = resp.json().get("detail", "Sistema bloqueado.")
+        except Exception:
+            detail = "Sistema bloqueado."
+        st.error(f"⛔ {detail}")
+        st.stop()
+
     if resp.status_code >= 500:
         st.error("Erro interno no servidor.")
         st.stop()

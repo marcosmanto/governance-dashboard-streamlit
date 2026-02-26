@@ -1,5 +1,7 @@
+from datetime import datetime, timezone
+
 from backend.audit.hash import compute_event_hash
-from backend.db import query
+from backend.db import execute, query
 
 
 def verificar_integridade_auditoria(conn):
@@ -34,6 +36,13 @@ def verificar_integridade_auditoria(conn):
 
     prev_hash = None
 
+    # Inicializa variáveis de estado (assumindo sucesso por padrão)
+    status = "OK"
+    violated_at = None
+    violated_event_id = None
+    reason = None
+    broken_result = None
+
     for row in rows:
         recalculated_hash = compute_event_hash(
             timestamp=row["timestamp"],
@@ -51,25 +60,60 @@ def verificar_integridade_auditoria(conn):
 
         # 1️⃣ Hash do próprio evento foi adulterado
         if recalculated_hash != row["event_hash"]:
-            return {
+            broken_result = {
                 "valid": False,
                 "reason": "event_hash mismatch",
                 "broken_at_id": row["id"],
                 "expected": recalculated_hash,
                 "found": row["event_hash"],
             }
+            status = "VIOLATED"
+            violated_at = datetime.now(timezone.utc).isoformat()
+            violated_event_id = row["id"]
+            reason = "event_hash mismatch"
+            break
 
         # 2️⃣ Cadeia quebrada (prev_hash não bate)
         if row["prev_hash"] != prev_hash:
-            return {
+            broken_result = {
                 "valid": False,
                 "reason": "prev_hash mismatch",
                 "broken_at_id": row["id"],
                 "expected_prev_hash": prev_hash,
                 "found_prev_hash": row["prev_hash"],
             }
+            status = "VIOLATED"
+            violated_at = datetime.now(timezone.utc).isoformat()
+            violated_event_id = row["id"]
+            reason = "prev_hash mismatch"
+            break
 
         prev_hash = row["event_hash"]
+
+    # 3️⃣ Atualizar status global de integridade
+    execute(
+        conn,
+        """
+        UPDATE audit_integrity
+           SET status = :status,
+               last_check_at = :now,
+               violated_at = :violated_at,
+               violated_event_id = :violated_event_id,
+               reason = :reason
+         WHERE id = 1
+        """,
+        {
+            "status": status,
+            "now": datetime.now(timezone.utc).isoformat(),
+            "violated_at": violated_at,
+            "violated_event_id": violated_event_id,
+            "reason": reason,
+        },
+    )
+    conn.commit()
+
+    if broken_result:
+        return broken_result
 
     return {
         "valid": True,
