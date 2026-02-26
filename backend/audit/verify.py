@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 
 from backend.audit.hash import compute_event_hash
@@ -113,6 +114,28 @@ def verificar_integridade_auditoria(conn):
     conn.commit()
 
     if broken_result:
+        # 4️⃣ Registrar evento forense de violação (FORA DA CADEIA - event_hash NULL)
+        # Isso serve como evidência imutável do momento da detecção.
+        payload_evidence = json.dumps(broken_result, default=str)
+        execute(
+            conn,
+            """
+            INSERT INTO auditoria (
+                timestamp, username, role, action, resource, resource_id,
+                payload_before, payload_after, endpoint, method, prev_hash, event_hash
+            ) VALUES (
+                :timestamp, 'system', 'system', 'AUDIT_VIOLATION', 'auditoria', :res_id,
+                NULL, :payload, '/admin/audit/verify', 'INTERNAL', NULL, NULL
+            )
+            """,
+            {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "res_id": violated_event_id,
+                "payload": payload_evidence,
+            },
+        )
+        conn.commit()
+
         return broken_result
 
     return {

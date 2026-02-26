@@ -8,7 +8,7 @@ from frontend.services.navigation import set_current_page
 
 set_current_page(Page.AUDITORIA)
 
-api, user = base_layout("Auditoria", "📜")
+api, user = base_layout("Auditoria", "📜", wide=True)
 
 # =====================
 # 🔐 Segurança
@@ -32,7 +32,7 @@ with st.expander("🔎 Filtros", expanded=True):
     with col2:
         action = st.selectbox(
             "Ação",
-            options=["", "INSERT", "UPDATE", "DELETE", "PUT", "POST"],
+            options=["", "INSERT", "UPDATE", "UPSERT", "DELETE", "PUT", "POST", "AUDIT_VIOLATION"],
         )
 
     with col3:

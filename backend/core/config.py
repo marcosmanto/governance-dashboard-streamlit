@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     EMAIL_FROM: str
     FRONTEND_URL: str
 
+    # External Anchoring
+    PASTEBIN_DEV_KEY: str | None = None
+    PASTEBIN_USERNAME: str | None = None
+    PASTEBIN_PASSWORD: str | None = None
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

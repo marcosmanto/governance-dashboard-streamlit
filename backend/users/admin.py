@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 
+from backend.audit.anchor import anchor_chain_to_pastebin
 from backend.audit.service import registrar_evento
 from backend.auth.dependencies import get_current_user, get_current_user_allow_password_change
 from backend.auth.permissions import require_role
-from backend.auth.service import login_user
 from backend.db import connect, execute, query
 from backend.users.password_reset_service import limpar_tokens_reset_expirados_ou_usados
 from backend.users.schemas import ChangePasswordIn
@@ -160,3 +160,40 @@ def update_user_email(
         raise exc
     finally:
         conn.close()
+
+
+@router.get("/audit/evidence")
+def get_audit_evidence(user=Depends(get_current_user)):
+    """
+    Retorna o relatório forense da última violação detectada.
+    """
+    require_role("admin")(user)
+    conn = connect()
+    try:
+        # Busca status de integridade
+        integrity = query(conn, "SELECT * FROM audit_integrity WHERE id=1")[0]
+
+        evidence = dict(integrity)
+
+        # Se houver violação, busca o evento de violação registrado
+        if integrity["status"] == "VIOLATED":
+            violation_event = query(
+                conn,
+                "SELECT * FROM auditoria WHERE action='AUDIT_VIOLATION' ORDER BY id DESC LIMIT 1",
+            )
+            if violation_event:
+                evidence["forensic_record"] = dict(violation_event[0])
+
+        return evidence
+    finally:
+        conn.close()
+
+
+@router.post("/audit/anchor")
+def create_anchor(user=Depends(get_current_user)):
+    """
+    Gera uma âncora criptográfica externa no Pastebin.
+    """
+    require_role("admin")(user)
+    url = anchor_chain_to_pastebin(user.username)
+    return {"message": "Âncora criada com sucesso", "url": url}

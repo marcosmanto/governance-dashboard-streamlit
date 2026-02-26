@@ -1,3 +1,4 @@
+from backend.core.logger import logger
 from backend.db import connect, query
 
 
@@ -12,9 +13,10 @@ def is_system_locked() -> bool:
         if rows and rows[0]["status"] != "OK":
             return True
         return False
-    except Exception:
-        # Se a tabela não existir ou der erro, assume sistema aberto (fail-open)
-        # para não travar antes das migrações rodarem.
-        return False
+    except Exception as e:
+        # 🛡️ Fail-closed: Se houver erro ao checar integridade, BLOQUEIA o sistema.
+        # Isso impede escritas em um banco instável ou corrompido.
+        logger.critical(f"FALHA CRÍTICA NO GUARD: {e}")
+        return True
     finally:
         conn.close()
