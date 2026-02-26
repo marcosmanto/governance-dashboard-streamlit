@@ -1,12 +1,12 @@
 import time
 from datetime import datetime, timezone
 
-from backend.core.logger import logger
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import ExpiredSignatureError, JWTError, jwt
 
 from backend.core.config import settings
+from backend.core.logger import logger
 from backend.db import connect, query
 from backend.models import User, UserContext
 

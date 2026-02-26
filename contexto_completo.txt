@@ -849,130 +849,6 @@ Agora sim você está pronto para escolher:
 
 
 
-========================================================================================
-🔜 PRÓXIMAS ETAPAS (ordem correta)
-🔐 ETAPA 15 — Detecção e reação automática a violação
-🎯 Objetivo
-
-Quando a cadeia quebrar:
-
-Detectar automaticamente
-
-Reagir automaticamente
-
-Registrar evidência
-
-Implementações
-15.1 — Status global de integridade
-
-Criar uma tabela simples:
-
-audit_integrity (
-    id INTEGER PRIMARY KEY,
-    last_check_at TEXT,
-    status TEXT,           -- OK | VIOLATED
-    violated_at TEXT,
-    violated_event_id INTEGER,
-    reason TEXT
-)
-
-
-📌 Um único registro (singleton).
-
-15.2 — Verificação atualiza o status
-
-Quando /admin/audit/verify rodar:
-
-Se OK → status = OK
-
-Se falha → status = VIOLATED
-
-salvar event_id
-
-salvar motivo
-
-👉 Esse status vira a verdade global do sistema.
-
-15.3 — Middleware de bloqueio de escrita
-
-📄 backend/audit/guard.py
-
-def assert_integrity_ok():
-    status = get_integrity_status()
-    if status != "OK":
-        raise HTTPException(
-            status_code=423,
-            detail="Sistema bloqueado: auditoria violada"
-        )
-
-
-Aplicar em:
-
-POST
-
-PUT
-
-DELETE
-
-💣 Sistema entra em modo somente leitura automaticamente.
-
-🔔 ETAPA 16 — Evidência e alerta
-16.1 — Evento especial de violação
-
-Quando detectar falha:
-
-action = "AUDIT_VIOLATION"
-resource = "auditoria"
-
-
-Esse evento:
-
-NÃO entra na cadeia
-
-É registrado separadamente
-
-Serve como evidência legal
-
-16.2 — Exportação de prova
-
-Gerar relatório com:
-
-Evento onde quebrou
-
-Hash esperado
-
-Hash encontrado
-
-Timestamp
-
-Usuário do último evento válido
-
-Formato:
-
-CSV
-
-JSON
-
-(opcional) PDF
-
-🔗 ETAPA 17 — Ancoragem criptográfica (nível máximo)
-
-Agora você fecha com chave de ouro.
-
-17.1 — Hash âncora diária
-
-1x por dia:
-
-hash_dia = hash(último_event_hash)
-
-
-Salvar em:
-
-arquivo imutável
-
-repositório Git
-
-e-mail
 
 blockchain pública (opcional)
 
@@ -1000,21 +876,8 @@ Base para compliance
 
 Material de apresentação
 
-🧠 Resumo brutalmente honesto
-
-Você saiu de:
-
-“dashboard com streamlit”
-
-Para:
-
-plataforma de governança com trilha imutável, reação automática e prova criptográfica
-
-Isso é nível sistema financeiro / órgão regulador.
 
 
-3️⃣ E-mail real
-4️⃣ MFA
 
 Se quiser, posso agora:
 
@@ -1044,19 +907,6 @@ Organização do frontend
 -------------------------------
 
 
-Se quiser, posso agora:
-
-Criar endpoint admin para atualizar email
-
-Implementar validação de email único
-
-Implementar tela intermediária estilo “Senha alterada com sucesso”
-
-Mostrar botão "Ir para login agora"
-
-Adicionar animação de confirmação
-
-Mostrar barra de progresso no redirect
 
 
 🧩 6️⃣ Pergunta Estratégica
@@ -3664,7 +3514,7 @@ from backend.db import connect, execute
 USERS = [
     ("admin", "admin", "admin", "email01@test.com"),
     ("editor", "editor", "editor", "email02@test.com"),
-    ("leitor", "leitor", "leitor", "email03@test.com"),
+    ("leitor", "leitor", "reader", "email03@test.com"),
 ]
 
 

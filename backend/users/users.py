@@ -1,4 +1,5 @@
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
@@ -20,7 +21,7 @@ from backend.users.password_reset_service import (
     validar_assinatura_token,
     validar_token_reset_senha,
 )
-from backend.users.schemas import UserProfileUpdate
+from backend.users.schemas import RoleRequestIn, UserProfileUpdate
 from backend.users.service import resetar_senha_por_token
 
 router = APIRouter(tags=["Users"])
@@ -297,3 +298,41 @@ def upload_avatar(
         conn.close()
 
     return {"message": "Avatar atualizado", "path": db_path}
+
+
+@router.post("/me/role-request")
+def request_role_change(
+    payload: RoleRequestIn,
+    user: UserContext = Depends(get_current_user),
+):
+    if payload.requested_role == user.role:
+        raise HTTPException(status_code=400, detail="Você já possui este perfil.")
+
+    conn = connect()
+    try:
+        # Verifica se já existe pedido pendente
+        pending = query(
+            conn,
+            "SELECT 1 FROM role_requests WHERE username = :u AND status = 'PENDING'",
+            {"u": user.username},
+        )
+        if pending:
+            raise HTTPException(status_code=400, detail="Já existe uma solicitação pendente.")
+
+        execute(
+            conn,
+            """
+            INSERT INTO role_requests (username, requested_role, justification, created_at)
+            VALUES (:u, :r, :j, :t)
+            """,
+            {
+                "u": user.username,
+                "r": payload.requested_role,
+                "j": payload.justification,
+                "t": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        conn.commit()
+        return {"message": "Solicitação enviada para aprovação."}
+    finally:
+        conn.close()

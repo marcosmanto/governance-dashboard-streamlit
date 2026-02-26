@@ -6,7 +6,7 @@ from backend.db import connect, execute
 USERS = [
     ("admin", "admin", "admin", "email01@test.com"),
     ("editor", "editor", "editor", "email02@test.com"),
-    ("leitor", "leitor", "leitor", "email03@test.com"),
+    ("leitor", "leitor", "reader", "email03@test.com"),
 ]
 
 

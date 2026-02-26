@@ -1,9 +1,12 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.audit.anchor import perform_anchoring
 from backend.audit.service import registrar_evento
 from backend.auth.dependencies import get_current_user, get_current_user_allow_password_change
 from backend.auth.permissions import require_role
+from backend.auth.service import revoke_all_sessions
 from backend.db import connect, execute, query
 from backend.users.password_reset_service import limpar_tokens_reset_expirados_ou_usados
 from backend.users.schemas import ChangePasswordIn
@@ -197,3 +200,82 @@ def create_anchor(user=Depends(get_current_user)):
     require_role("admin")(user)
     results = perform_anchoring(user)
     return {"message": "Âncora criada com sucesso", "details": results}
+
+
+@router.get("/role-requests")
+def list_role_requests(user=Depends(get_current_user)):
+    require_role("admin")(user)
+    conn = connect()
+    try:
+        return [
+            dict(row) for row in query(conn, "SELECT * FROM role_requests ORDER BY created_at DESC")
+        ]
+    finally:
+        conn.close()
+
+
+@router.post("/role-requests/{req_id}/{action}")
+def process_role_request(req_id: int, action: str, user=Depends(get_current_user)):
+    require_role("admin")(user)
+    if action not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="Ação inválida")
+
+    conn = connect()
+    try:
+        req = query(conn, "SELECT * FROM role_requests WHERE id = :id", {"id": req_id})
+        if not req:
+            raise HTTPException(404, "Solicitação não encontrada")
+        req = req[0]
+
+        if req["status"] != "PENDING":
+            raise HTTPException(400, "Solicitação já processada")
+
+        new_status = "APPROVED" if action == "approve" else "REJECTED"
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Atualiza status do pedido
+        execute(
+            conn,
+            """
+            UPDATE role_requests
+               SET status = :s, processed_at = :t, processed_by = :by
+             WHERE id = :id
+            """,
+            {"s": new_status, "t": now, "by": user.username, "id": req_id},
+        )
+
+        if action == "approve":
+            # 1. Atualiza Role do Usuário
+            execute(
+                conn,
+                "UPDATE users SET role = :r WHERE username = :u",
+                {"r": req["requested_role"], "u": req["username"]},
+            )
+            # 2. Revoga sessões (força re-login para pegar novo role)
+            revoke_all_sessions(req["username"], conn=conn)
+
+        # Auditoria
+        registrar_evento(
+            conn=conn,
+            username=user.username,
+            role=user.role,
+            action=f"ROLE_REQUEST_{new_status}",
+            resource="users",
+            resource_id=req_id,
+            payload_before={"role": "old_role_unknown", "request_status": "PENDING"},
+            payload_after={
+                "target_user": req["username"],
+                "new_role": req["requested_role"] if action == "approve" else None,
+                "status": new_status,
+            },
+            endpoint=f"/admin/role-requests/{req_id}/{action}",
+            method="POST",
+        )
+
+        conn.commit()
+        return {"message": f"Solicitação {new_status}"}
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()

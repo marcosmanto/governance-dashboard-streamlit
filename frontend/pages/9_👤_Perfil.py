@@ -114,3 +114,34 @@ with col_avatar:
             img_url = f"https://ui-avatars.com/api/?name={nome}&background=random&size=150"
 
         st.image(img_url, width=150, caption="Avatar Atual")
+
+# --- Seção de Permissões ---
+st.divider()
+st.subheader("🛡️ Permissões e Acesso")
+st.info(f"Seu nível de acesso atual é: **{user.get('role', '').upper()}**")
+
+with st.expander("Solicitar mudança de nível de acesso"):
+    with st.form("role_request_form"):
+        new_role = st.selectbox("Nível desejado", ["editor", "admin", "reader"])
+        justification = st.text_area(
+            "Justificativa", placeholder="Explique por que precisa deste acesso..."
+        )
+
+        if st.form_submit_button("Enviar Solicitação"):
+            if new_role == user.get("role"):
+                st.warning("Você já possui este perfil.")
+            elif not justification.strip():
+                st.error("A justificativa é obrigatória.")
+            else:
+                try:
+                    resp = api._request(
+                        "POST",
+                        "/me/role-request",
+                        json={"requested_role": new_role, "justification": justification},
+                    )
+                    if resp.status_code == 200:
+                        st.success("Solicitação enviada! Um administrador analisará seu pedido.")
+                    else:
+                        st.error(resp.json().get("detail", "Erro ao enviar."))
+                except Exception as e:
+                    st.error(f"Erro: {e}")
