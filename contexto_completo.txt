@@ -300,6 +300,7 @@ painel_dados_chatgpt_tutorial/
 │  ├─ V001__create_registros.py
 │  ├─ V002__auditoria_registros.py
 │  └─ V003__unicidade_upsert_e_wal.py
+│  └─ ... (até V014)
 └─ migrate.py
 ```
 
@@ -395,6 +396,57 @@ python migrate.py --db ./data/dados.db --migrations ./migrations --init-if-missi
 - Cria **view** `vw_registros_upsert` + **gatilho `INSTEAD OF INSERT`** para permitir **upsert** via `INSERT` na view.
 - Ativa **WAL** e `synchronous = NORMAL` (aplicado fora de transação para persistir).
 
+### V004 — `create_auditoria` (SQL)
+
+- Cria a tabela central de `auditoria` para registrar eventos de sistema (login, logout, alterações de dados).
+- Estrutura base para o registro de *quem, quando, onde e o quê*.
+
+### V005 — `sessions` (SQL)
+
+- Cria a tabela `user_sessions` para gestão de sessões stateful (com suporte a revogação pelo servidor).
+- Permite controle de múltiplos dispositivos e logout remoto.
+
+### V006 — `add_audit_hash_chain` (SQL)
+
+- Adiciona as colunas `prev_hash` e `event_hash` na tabela de auditoria.
+- Habilita a **Cadeia Criptográfica** (Blockchain-style) para garantir imutabilidade e detecção de violação.
+
+### V007 — `users_table` (SQL)
+
+- Cria a tabela `users` para autenticação local (username, password_hash, role).
+
+### V008 — `must_change_password` (SQL)
+
+- Adiciona flag para forçar o usuário a trocar de senha no próximo login.
+
+### V009 — `password_reset_tokens` (SQL)
+
+- Cria tabela para armazenar hashes de tokens de recuperação de senha.
+- Suporte a expiração e uso único (anti-replay).
+
+### V010 — `password_changed_at` (SQL)
+
+- Adiciona timestamp da última troca de senha no usuário.
+- Crítico para invalidar tokens JWT antigos quando a senha é alterada (rotação de chaves).
+
+### V011 — `password_expiration` (SQL)
+
+- Adiciona data de expiração da senha (`password_expires_at`).
+- Implementa política de rotação periódica de credenciais.
+
+### V012 — `users_email` (SQL)
+
+- Adiciona campo de e-mail único para usuários (necessário para recuperação de senha).
+
+### V013 — `users_profile_fields` (SQL)
+
+- Adiciona campos de perfil: `name`, `fullname` e `avatar_path`.
+
+### V014 — `audit_integrity` (SQL)
+
+- Cria tabela singleton `audit_integrity` para armazenar o status global de segurança.
+- Usada pelo **Circuit Breaker** para bloquear escritas em caso de violação da auditoria.
+
 > **Sobre `origem` no upsert da view:** a versão original da V003 definia `origem` como `'upsert'` quando ausente. Caso você prefira **manter a origem anterior** quando não enviar `origem` no upsert, ajuste o gatilho para enviar `NEW.origem` (sem `COALESCE('upsert')`) e usar `COALESCE(excluded.origem, registros.origem)` no `DO UPDATE`. Podemos disponibilizar uma V004 de ajuste se desejar.
 
 ---
@@ -468,6 +520,280 @@ line-length = 100   # ou 110/120, a seu gosto
 [tool.ruff.lint]
 # Não aplicar fix para F401 (unused-import) nem quando "Fix All" estiver ativo.
 unfixable = ["F401"]
+
+==================================================
+FILE: .\README_v1.md
+==================================================
+# README
+
+## Execução do projeto (Windows / Linux / macOS)
+
+Para executar o **backend (FastAPI/Uvicorn)** e o **frontend (Streamlit)** a partir da **pasta raiz do projeto** (ex.: `.../painel_dados_chatgpt_tutorial` **ou** a pasta **acima** dela), defina o `PYTHONPATH` para que os imports absolutos (`backend.*`, `frontend.*`) funcionem corretamente.
+
+> **Por quê?** O Python procura módulos com base no `sys.path`. Ao rodar scripts a partir de caminhos diferentes, pode faltar o diretório raiz do projeto no `PYTHONPATH`, causando erros como `ModuleNotFoundError: No module named 'frontend'`.
+
+### 1) Windows (Prompt de Comando / CMD)
+
+Abra **dois terminais** (ou abas):
+
+**Backend (Uvicorn):**
+
+```bat
+cd caminho\para\pasta-acima-ou-raiz\do\projeto
+set PYTHONPATH=%CD% && uvicorn backend.main:app --reload
+```
+
+**Frontend (Streamlit):**
+
+```bat
+cd caminho\para\pasta-acima-ou-raiz\do\projeto
+set "PYTHONPATH=%CD%" && streamlit run frontend\Home.py
+```
+
+> Dica (PowerShell):
+>
+> ```powershell
+> $env:PYTHONPATH = (Get-Location).Path
+> uvicorn backend.main:app --reload
+> # Em outra aba
+> $env:PYTHONPATH = (Get-Location).Path
+> streamlit run frontend/Home.py
+> ```
+
+### 2) Linux / macOS (bash/zsh)
+
+Também em **dois terminais**:
+
+**Backend (Uvicorn):**
+
+```bash
+cd /caminho/para/pasta-acima-ou-raiz/do/projeto
+export PYTHONPATH="$PWD" && uvicorn backend.main:app --reload
+```
+
+**Frontend (Streamlit):**
+
+```bash
+cd /caminho/para/pasta-acima-ou-raiz/do/projeto
+export PYTHONPATH="$PWD" && streamlit run frontend/app.py
+```
+
+### Observações
+
+- Execute **backend** e **frontend** simultaneamente (dois terminais), pois o Streamlit pode chamar a API do FastAPI.
+- Se preferir, você pode evitar `PYTHONPATH` com **imports relativos** no `frontend/app.py` (ex.: `from .loaders.registros import ...`), mas manter o `PYTHONPATH` facilita quando há **múltiplos pacotes** (`backend/`, `frontend/`, `migrations/`).
+- Se aparecer `ModuleNotFoundError`, verifique:
+  1. Você está na **pasta correta**? (`cd` para a raiz do projeto ou **um nível acima** dela, conforme os comandos acima).
+  2. O `PYTHONPATH` realmente aponta para a pasta **raiz** do projeto (`echo %PYTHONPATH%` no CMD / `echo $PYTHONPATH` no bash)?
+- Portas padrão: Streamlit `http://localhost:8501`, FastAPI/Uvicorn `http://127.0.0.1:8000`.
+
+## Scripts prontos (Windows / Linux / macOS)
+
+A partir da **raiz do projeto**, você pode usar os scripts em `./scripts`:
+
+### Windows (CMD)
+
+- Backend: `scripts\start_backend.bat`
+- Frontend: `scripts\start_frontend.bat`
+- **Tudo junto (duas janelas):** `scripts\start_all_windows.bat`
+
+### Linux/macOS (bash/zsh)
+
+Primeiro, dê permissão de execução (uma vez):
+
+```bash
+chmod +x scripts/*.sh
+```
+
+Depois execute:
+
+- Backend: `./scripts/start_backend.sh`
+- Frontend: `./scripts/start_frontend.sh`
+- **Tudo junto:** `./scripts/start_all.sh`
+
+> Todos os scripts ajustam `PYTHONPATH` para a raiz do projeto antes de iniciar os serviços.
+
+## ⚙️ Configuração do Ambiente (.env)
+
+Este projeto utiliza variáveis de ambiente centralizadas para configuração
+de segurança, banco de dados e tempo de expiração de sessões.
+
+### 📁 Arquivo `.env`
+
+Crie um arquivo `.env` **na raiz do projeto** (mesmo nível de `backend/` e `frontend/`).
+
+Exemplo:
+
+```env
+# Ambiente
+ENV=dev
+
+# JWT
+JWT_SECRET=uma-chave-secreta-forte
+JWT_ALGORITHM=HS256
+
+# Expiração de tokens
+ACCESS_TOKEN_EXPIRE_MINUTES=15
+REFRESH_TOKEN_EXPIRE_DAYS=7
+
+# Database
+DB_BACKEND=sqlite
+DB_DSN=./data/dados.db
+```
+
+## 🔐 Auditoria e Governança de Dados
+
+Este projeto implementa um **sistema de auditoria avançado**, projetado para **ambientes institucionais**, com foco em **integridade, rastreabilidade e não-repúdio**.
+
+---
+
+### 🧾 Trilha de Auditoria Completa (Before / After)
+
+Toda operação de **mutação de dados** (`POST`, `PUT`, `DELETE`) gera automaticamente um evento de auditoria contendo:
+
+- Usuário responsável
+- Perfil (role)
+- Timestamp em UTC
+- Ação executada
+- Recurso afetado
+- Identificador do registro
+- **Estado anterior (`payload_before`)**
+- **Estado posterior (`payload_after`)**
+- Endpoint e método HTTP
+
+Isso permite reconstruir **exatamente o que mudou, quando e por quem**.
+
+---
+
+### 🔗 Cadeia Criptográfica de Auditoria (Blockchain-style)
+
+Os eventos de auditoria são protegidos por uma **cadeia de hash SHA-256**, inspirada em conceitos de blockchain:
+
+- Cada evento possui um `event_hash`
+- Cada evento referencia o `prev_hash` do evento anterior
+- O hash é calculado a partir de:
+  - metadados do evento
+  - payload _before / after_
+  - hash do evento anterior
+
+📌 **Qualquer alteração retroativa em um evento invalida toda a cadeia subsequente.**
+
+---
+
+### 🛡️ Bloqueio Automático de Escrita (Circuit Breaker)
+
+Para garantir que dados não sejam corrompidos ou que evidências não sejam "enterradas" após uma violação, o sistema possui um mecanismo de defesa ativa:
+
+1.  **Monitoramento:** O status de integridade é mantido em uma tabela singleton (`audit_integrity`).
+2.  **Detecção:** Ao rodar a verificação (`/admin/audit/verify`) e encontrar inconsistência, o status muda para `VIOLATED`.
+3.  **Reação:** O middleware `IntegrityGuardMiddleware` intercepta **todas** as requisições de escrita (`POST`, `PUT`, `DELETE`).
+4.  **Bloqueio:** Se o status for `VIOLATED`, o sistema retorna **HTTP 423 Locked**, impedindo novas alterações até que um administrador resolva o incidente.
+
+> **Nota:** Rotas de autenticação (`/login`, `/logout`) permanecem ativas para permitir que o administrador acesse o painel e restaure o sistema.
+
+---
+
+### 🧪 Verificação de Integridade
+
+O backend expõe um endpoint administrativo que:
+
+- Recalcula toda a cadeia de hash
+- Detecta:
+  - eventos adulterados
+  - remoções
+  - inserções fora de ordem
+- Identifica exatamente:
+  - o ponto de falha
+  - o evento comprometido
+  - o motivo da inconsistência
+
+---
+
+### 🖥️ Painel Visual de Integridade (Streamlit)
+
+O frontend possui uma tela dedicada de **Integridade da Auditoria**, com:
+
+- Indicador visual de status:
+  - 🟢 Cadeia íntegra
+  - 🔴 Violação detectada
+- Exibição do ponto exato de falha
+- Botão para **reexecutar a verificação**
+- Exportação dos resultados para análise externa
+
+---
+
+### 🚨 Detecção de Violação e Evidência
+
+O sistema foi projetado para:
+
+- Detectar adulterações automaticamente
+- Gerar evidência técnica verificável
+- Servir como base para:
+  - auditorias internas
+  - investigações
+  - compliance regulatório
+
+---
+
+### 🏛️ Princípios Atendidos
+
+A arquitetura de auditoria atende aos seguintes princípios:
+
+- Imutabilidade dos registros
+- Não-repúdio
+- Rastreabilidade completa
+- Evidência forense
+- Governança e accountability
+
+---
+
+### ⚠️ Importante
+
+- **Eventos de auditoria nunca são alterados**
+- Qualquer modificação de dados gera **um novo evento**
+- O passado permanece imutável e verificável
+
+---
+
+### 📌 Casos de Uso
+
+- Governança de dados
+- Ambientes regulados
+- Sistemas administrativos
+- Trilhas de auditoria institucionais
+- Estudos de arquitetura segura
+
+## 👤 Gestão de Usuários e Perfil
+
+O sistema oferece um módulo completo de identidade:
+
+- **Perfil do Usuário:** Edição de dados cadastrais e upload de **Avatar**.
+- **Gestão de Sessões:**
+  - Visualização de sessões ativas.
+  - Revogação remota de sessões (logout forçado).
+  - Limpeza automática de sessões expiradas.
+- **Política de Senhas:**
+  - Expiração automática (rotação periódica).
+  - Forçar troca no próximo login.
+
+## 🔐 Reset de senha
+
+O sistema implementa um fluxo seguro de redefinição de senha:
+
+- Token criptograficamente seguro
+- Apenas hash do token é persistido
+- Token com expiração
+- Uso único
+- `/password-reset/cleanup` endpoint para limpeza de tokens de reset de senha expirados ou usados
+- Auditoria completa dos eventos
+
+Fluxo:
+
+1. `/forgot-password` gera token
+2. Token é enviado ao usuário
+3. `/reset-password` redefine senha
+4. Evento auditado
+
 
 ==================================================
 FILE: .\requirements.txt
@@ -739,11 +1065,119 @@ Antes de avançarmos:
 
 Você quer agora focar em:
 
-A) 🔐 Evolução da Auditoria (ETAPA 15–17)
-B) 🧱 Refatoração de arquitetura (remover middleware audit problemático)
 C) 🚀 Docker + Deploy profissional
 D) 🎨 Streamlit robusto (sessão persistente, UX, estado pós F5)
 E) 🔒 Segurança avançada (MFA, rate limit adaptativo, hardening)
+
+
+
+A) 🧾 Evidência forense (ETAPA 16)
+B) 🔗 Ancoragem criptográfica externa (ETAPA 17)
+C) 🔐 MFA
+D) 🚀 Docker + HTTPS + deploy real
+E) 🧱 Hardening arquitetural profundo
+
+
+
+
+🧠 Então… o que falta de verdade?
+
+Agora a evolução deixa de ser “mais segurança” e passa a ser:
+
+🔴 CAMADA 1 — Formalização institucional
+
+Documento de Política de Integridade
+
+Procedimento de resposta a incidentes
+
+Procedimento de ancoragem
+
+Política de retenção
+
+(ETAPA 18)
+
+🔵 CAMADA 2 — Segurança de Identidade (único eixo ainda abaixo do nível da auditoria)
+
+Você ainda não tem:
+
+MFA (TOTP)
+
+Device binding
+
+Session fingerprint
+
+Risk-based authentication
+
+Sua auditoria está nível 9/10.
+Sua autenticação está nível 6/10.
+
+Se for evoluir tecnicamente:
+
+👉 MFA é o próximo salto coerente.
+
+🟢 CAMADA 3 — Produção real
+
+Você ainda não fez:
+
+Docker + Nginx
+
+HTTPS real
+
+Reverse proxy
+
+HSTS
+
+CSP headers
+
+Deploy em ambiente isolado
+
+Sem isso, tudo que você fez ainda está “laboratório”.
+
+🎯 Minha recomendação estratégica
+
+Você tem três caminhos naturais agora:
+
+A) 🔐 Evoluir autenticação (MFA)
+
+Eleva identidade ao mesmo nível da auditoria.
+
+B) 🚀 Docker + HTTPS + Deploy
+
+Transforma o sistema em produto real.
+
+C) 📄 ETAPA 18 — Documento de Governança
+
+Consolida o projeto como arquitetura institucional formal.
+
+🧠 Minha leitura técnica final
+
+Você não está mais na fase de:
+
+“Adicionar mais features”.
+
+Você está na fase de:
+
+“Escolher a direção estratégica”.
+
+Se você quer minha recomendação como arquiteto:
+
+👉 Próximo passo ideal: MFA (TOTP) + binding de sessão
+
+Porque:
+
+Sua auditoria já é forte.
+Agora o elo mais fraco é identidade.
+
+Pergunta objetiva:
+
+Você quer agora:
+
+1️⃣ 🔐 Subir o nível de autenticação
+2️⃣ 🚀 Levar para produção real
+3️⃣ 📄 Consolidar em modelo institucional
+4️⃣ 🧠 Revisão de arquitetura completa (security review estilo pentest lógico)
+
+Escolha o eixo — e vamos aprofundar.
 
 ==================================================
 FILE: .\.continue\rules\commit-message-guidelines.md
@@ -1573,8 +2007,152 @@ FILE: .\backend\__init__.py
 
 
 ==================================================
+FILE: .\backend\audit\anchor.py
+==================================================
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+import requests
+from fastapi import HTTPException
+
+from backend.audit.service import obter_ultimo_hash
+from backend.core.config import settings
+from backend.db import connect
+from backend.models import UserContext
+
+# Cache simples para evitar login repetitivo no Pastebin
+_cached_user_key: str | None = None
+
+
+def _get_pastebin_user_key() -> str | None:
+    global _cached_user_key
+    if _cached_user_key:
+        return _cached_user_key
+
+    if not settings.PASTEBIN_USERNAME or not settings.PASTEBIN_PASSWORD:
+        return None  # Sem credenciais, segue como Guest
+
+    login_data = {
+        "api_dev_key": settings.PASTEBIN_DEV_KEY,
+        "api_user_name": settings.PASTEBIN_USERNAME,
+        "api_user_password": settings.PASTEBIN_PASSWORD,
+    }
+
+    resp = requests.post("https://pastebin.com/api/api_login.php", data=login_data, timeout=10)
+    if "Bad API Request" in resp.text:
+        raise HTTPException(status_code=502, detail=f"Erro login Pastebin: {resp.text}")
+
+    _cached_user_key = resp.text
+    return _cached_user_key
+
+
+def _save_to_local_file(timestamp: str, last_hash: str, username: str) -> str:
+    """Estratégia 1: Arquivo Local Append-Only"""
+    path = Path("data/anchors.log")
+    entry = f"{timestamp} | HASH:{last_hash} | USER:{username}\n"
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(entry)
+    return str(path.absolute())
+
+
+def _save_to_git(timestamp: str, last_hash: str, username: str) -> str | None:
+    """Estratégia 2: Commit no Git (se disponível)"""
+    if not Path(".git").is_dir():
+        return None
+
+    try:
+        msg = f"🛡️ ANCHOR: {last_hash} | {timestamp} | {username}"
+        # --allow-empty permite criar commit sem mudar arquivos, apenas para registro no log
+        subprocess.run(
+            ["git", "commit", "--allow-empty", "-m", msg],
+            check=True,
+            capture_output=True,
+        )
+        # Pega o hash do commit gerado
+        res = subprocess.run(
+            ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+        )
+        return res.stdout.strip()
+    except Exception:
+        return None  # Falha silenciosa se git não estiver configurado ou der erro
+
+
+def perform_anchoring(user: UserContext) -> dict:
+    """
+    Executa ancoragem em múltiplas camadas: Local, Git e Pastebin.
+    """
+    conn = connect()
+    try:
+        last_hash = obter_ultimo_hash(conn)
+    finally:
+        conn.close()
+
+    if not last_hash:
+        raise HTTPException(status_code=400, detail="Cadeia de auditoria vazia")
+
+    now = datetime.now(timezone.utc).isoformat()
+    results = {"hash": last_hash, "timestamp": now}
+
+    # 1️⃣ Camada Local
+    try:
+        local_path = _save_to_local_file(now, last_hash, user.username)
+        results["local_file"] = local_path
+    except Exception as e:
+        results["local_file_error"] = str(e)
+
+    # 2️⃣ Camada Git
+    git_hash = _save_to_git(now, last_hash, user.username)
+    if git_hash:
+        results["git_commit"] = git_hash
+
+    # 3️⃣ Camada Externa (Pastebin) - Opcional se configurado
+    if settings.PASTEBIN_DEV_KEY:
+        try:
+            paste_url = _post_to_pastebin(now, last_hash, user.username)
+            results["pastebin_url"] = paste_url
+        except Exception as e:
+            results["pastebin_error"] = str(e)
+
+    return results
+
+
+def _post_to_pastebin(timestamp: str, last_hash: str, username: str) -> str:
+    """Lógica isolada do Pastebin"""
+
+    # Conteúdo da âncora
+    paste_content = f"""
+    === GOVERNANCE DASHBOARD ANCHOR ===
+    Timestamp: {timestamp}
+    Anchor Hash: {last_hash}
+    Signed By: {username}
+    ===================================
+    """
+
+    data = {
+        "api_dev_key": settings.PASTEBIN_DEV_KEY,
+        "api_option": "paste",
+        "api_paste_code": paste_content,
+        "api_paste_name": f"Anchor {timestamp}",
+        "api_paste_private": "1",  # 0=Public, 1=Unlisted, 2=Private
+    }
+
+    user_key = _get_pastebin_user_key()
+    if user_key:
+        data["api_user_key"] = user_key
+
+    resp = requests.post("https://pastebin.com/api/api_post.php", data=data, timeout=10)
+
+    if "Bad API Request" in resp.text:
+        raise HTTPException(status_code=502, detail=f"Erro no Pastebin: {resp.text}")
+
+    return resp.text  # Retorna a URL (ex: https://pastebin.com/xxxx)
+
+
+==================================================
 FILE: .\backend\audit\guard.py
 ==================================================
+from backend.core.logger import logger
 from backend.db import connect, query
 
 
@@ -1589,10 +2167,11 @@ def is_system_locked() -> bool:
         if rows and rows[0]["status"] != "OK":
             return True
         return False
-    except Exception:
-        # Se a tabela não existir ou der erro, assume sistema aberto (fail-open)
-        # para não travar antes das migrações rodarem.
-        return False
+    except Exception as e:
+        # 🛡️ Fail-closed: Se houver erro ao checar integridade, BLOQUEIA o sistema.
+        # Isso impede escritas em um banco instável ou corrompido.
+        logger.critical(f"FALHA CRÍTICA NO GUARD: {e}")
+        return True
     finally:
         conn.close()
 
@@ -1840,6 +2419,7 @@ def registrar_evento(
 ==================================================
 FILE: .\backend\audit\verify.py
 ==================================================
+import json
 from datetime import datetime, timezone
 
 from backend.audit.hash import compute_event_hash
@@ -1955,6 +2535,28 @@ def verificar_integridade_auditoria(conn):
     conn.commit()
 
     if broken_result:
+        # 4️⃣ Registrar evento forense de violação (FORA DA CADEIA - event_hash NULL)
+        # Isso serve como evidência imutável do momento da detecção.
+        payload_evidence = json.dumps(broken_result, default=str)
+        execute(
+            conn,
+            """
+            INSERT INTO auditoria (
+                timestamp, username, role, action, resource, resource_id,
+                payload_before, payload_after, endpoint, method, prev_hash, event_hash
+            ) VALUES (
+                :timestamp, 'system', 'system', 'AUDIT_VIOLATION', 'auditoria', :res_id,
+                NULL, :payload, '/admin/audit/verify', 'INTERNAL', NULL, NULL
+            )
+            """,
+            {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "res_id": violated_event_id,
+                "payload": payload_evidence,
+            },
+        )
+        conn.commit()
+
         return broken_result
 
     return {
@@ -2552,6 +3154,11 @@ class Settings(BaseSettings):
     EMAIL_FROM: str
     FRONTEND_URL: str
 
+    # External Anchoring
+    PASTEBIN_DEV_KEY: str | None = None
+    PASTEBIN_USERNAME: str | None = None
+    PASTEBIN_PASSWORD: str | None = None
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
@@ -2847,10 +3454,10 @@ FILE: .\backend\users\admin.py
 ==================================================
 from fastapi import APIRouter, Depends, HTTPException
 
+from backend.audit.anchor import perform_anchoring
 from backend.audit.service import registrar_evento
 from backend.auth.dependencies import get_current_user, get_current_user_allow_password_change
 from backend.auth.permissions import require_role
-from backend.auth.service import login_user
 from backend.db import connect, execute, query
 from backend.users.password_reset_service import limpar_tokens_reset_expirados_ou_usados
 from backend.users.schemas import ChangePasswordIn
@@ -3007,6 +3614,43 @@ def update_user_email(
         raise exc
     finally:
         conn.close()
+
+
+@router.get("/audit/evidence")
+def get_audit_evidence(user=Depends(get_current_user)):
+    """
+    Retorna o relatório forense da última violação detectada.
+    """
+    require_role("admin")(user)
+    conn = connect()
+    try:
+        # Busca status de integridade
+        integrity = query(conn, "SELECT * FROM audit_integrity WHERE id=1")[0]
+
+        evidence = dict(integrity)
+
+        # Se houver violação, busca o evento de violação registrado
+        if integrity["status"] == "VIOLATED":
+            violation_event = query(
+                conn,
+                "SELECT * FROM auditoria WHERE action='AUDIT_VIOLATION' ORDER BY id DESC LIMIT 1",
+            )
+            if violation_event:
+                evidence["forensic_record"] = dict(violation_event[0])
+
+        return evidence
+    finally:
+        conn.close()
+
+
+@router.post("/audit/anchor")
+def create_anchor(user=Depends(get_current_user)):
+    """
+    Gera âncoras criptográficas de auditoria (Local, Git e Pastebin se configurado).
+    """
+    require_role("admin")(user)
+    results = perform_anchoring(user)
+    return {"message": "Âncora criada com sucesso", "details": results}
 
 
 ==================================================
@@ -4680,7 +5324,7 @@ from frontend.services.navigation import set_current_page
 
 set_current_page(Page.AUDITORIA)
 
-api, user = base_layout("Auditoria", "📜")
+api, user = base_layout("Auditoria", "📜", wide=True)
 
 # =====================
 # 🔐 Segurança
@@ -4704,7 +5348,7 @@ with st.expander("🔎 Filtros", expanded=True):
     with col2:
         action = st.selectbox(
             "Ação",
-            options=["", "INSERT", "UPDATE", "DELETE", "PUT", "POST"],
+            options=["", "INSERT", "UPDATE", "UPSERT", "DELETE", "PUT", "POST", "AUDIT_VIOLATION"],
         )
 
     with col3:
@@ -4903,6 +5547,7 @@ FILE: .\frontend\pages\5_🔐_Integridade_Auditoria.py
 ==================================================
 import json
 
+import pandas as pd
 import streamlit as st
 
 from frontend.core.pages import Page
@@ -4934,50 +5579,138 @@ with col2:
     st.space()
 
 # ============================
-# 🔎 VERIFICAÇÃO DA CADEIA
+# 🔎 VERIFICAÇÃO E EVIDÊNCIA
 # ============================
 
-with st.spinner("Verificando integridade da auditoria..."):
-    resp = api._request("GET", "/admin/audit/verify")
+with st.spinner("Verificando integridade e buscando evidências..."):
+    # 1. Re-executa a verificação para atualizar o status
+    verify_resp = api._request("GET", "/admin/audit/verify")
+    # 2. Busca o relatório forense completo
+    evidence_resp = api._request("GET", "/admin/audit/evidence")
 
-if resp.status_code != 200:
-    st.error("Erro ao verificar auditoria.")
+if verify_resp.status_code != 200 or evidence_resp.status_code != 200:
+    st.error("Erro ao executar verificação e obter evidência.")
+    st.code(f"Verify Response: {verify_resp.status_code} - {verify_resp.text}")
+    st.code(f"Evidence Response: {evidence_resp.status_code} - {evidence_resp.text}")
     st.stop()
 
-result = resp.json()
+evidence_report = evidence_resp.json()
+is_valid = evidence_report.get("status") == "OK"
 
 # ============================
 # 🟢 / 🔴 STATUS VISUAL
 # ============================
 
-if result["valid"]:
+if is_valid:
     st.success("✔ Auditoria íntegra e confiável")
-    st.metric("Eventos verificados", result.get("checked_events", 0))
+    verify_result = verify_resp.json()
+    st.metric("Eventos verificados na última checagem", verify_result.get("checked_events", "N/A"))
 else:
-    st.error("❌ Violação detectada na auditoria")
-    st.warning(f"Motivo: **{result['reason']}**")
-    st.warning(f"Evento afetado (ID): **{result['broken_at_id']}**")
+    st.error("❌ Violação de Integridade Detectada")
+
+    forensic_record = evidence_report.get("forensic_record")
+    if forensic_record:
+        st.write("#### Detalhes da Violação")
+
+        try:
+            violation_details = json.loads(forensic_record.get("payload_after", "{}"))
+        except (json.JSONDecodeError, TypeError):
+            violation_details = {}
+
+        col1, col2 = st.columns(2)
+        col1.metric("ID do Evento Comprometido", violation_details.get("broken_at_id", "N/A"))
+        col2.metric(
+            "Data da Detecção (UTC)",
+            pd.to_datetime(evidence_report.get("violated_at")).strftime("%d/%m/%Y %H:%M:%S"),
+        )
+
+        st.warning(f"**Motivo:** `{violation_details.get('reason', 'Desconhecido')}`")
+
+        with st.expander("🔍 Detalhes Técnicos da Evidência"):
+            st.write("##### Hash Esperado vs. Encontrado")
+            if "expected_prev_hash" in violation_details:
+                st.code(
+                    f"- Hash Anterior Esperado: {violation_details['expected_prev_hash']}\n+ Hash Anterior Encontrado: {violation_details['found_prev_hash']}",
+                    language="diff",
+                )
+            elif "expected" in violation_details:
+                st.code(
+                    f"- Hash Calculado: {violation_details['expected']}\n+ Hash Armazenado: {violation_details['found']}",
+                    language="diff",
+                )
+
+            st.write("##### Registro Forense Completo")
+            st.json(evidence_report, expanded=False)
+    else:
+        st.warning(f"Motivo: **{evidence_report.get('reason', 'Desconhecido')}**")
+        st.warning(f"Evento afetado (ID): **{evidence_report.get('violated_event_id', 'N/A')}**")
 
 # ============================
 # 🧾 EXPORTAÇÃO
 # ============================
 
 st.divider()
-st.subheader("🧾 Exportar relatório")
+st.subheader("🧾 Exportar Relatório Forense")
 
-export_data = {
-    "status": "valid" if result["valid"] else "broken",
-    "details": result,
-}
+# JSON Export
+json_bytes = json.dumps(evidence_report, indent=2, default=str).encode("utf-8")
 
-json_bytes = json.dumps(export_data, indent=2).encode("utf-8")
+# CSV Export
+flat_data = {}
+flat_data.update(evidence_report)
+forensic_record = flat_data.pop("forensic_record", {})
+if forensic_record:
+    forensic_flat = {f"forensic_{k}": v for k, v in forensic_record.items()}
+    flat_data.update(forensic_flat)
 
-st.download_button(
-    label="📥 Baixar relatório (JSON)",
+if "forensic_payload_after" in flat_data and flat_data["forensic_payload_after"]:
+    try:
+        payload_details = json.loads(flat_data.pop("forensic_payload_after"))
+        payload_flat = {f"violation_{k}": v for k, v in payload_details.items()}
+        flat_data.update(payload_flat)
+    except Exception:
+        pass
+
+df_export = pd.DataFrame([flat_data])
+csv_bytes = df_export.to_csv(index=False).encode("utf-8")
+
+col1, col2, _ = st.columns([1, 1, 3])
+col1.download_button(
+    label="📥 Baixar JSON",
     data=json_bytes,
-    file_name="integridade_auditoria.json",
+    file_name="relatorio_integridade.json",
     mime="application/json",
+    use_container_width=True,
 )
+col2.download_button(
+    label="📄 Baixar CSV",
+    data=csv_bytes,
+    file_name="relatorio_integridade.csv",
+    mime="text/csv",
+    use_container_width=True,
+)
+
+# ============================
+# 🔗 ANCORAGEM EXTERNA
+# ============================
+st.divider()
+st.subheader("🔗 Ancoragem Criptográfica Externa")
+st.caption(
+    "Cria uma prova externa e imutável do estado atual da cadeia de auditoria, publicando o último hash em um serviço terceiro (Pastebin)."
+)
+
+if st.button("⚓ Criar Âncora no Pastebin", type="primary", use_container_width=True):
+    with st.spinner("Gerando âncora externa..."):
+        try:
+            resp = api._request("POST", "/admin/audit/anchor")
+            if resp.status_code == 200:
+                data = resp.json()
+                st.success(f"Âncora criada com sucesso! URL: {data['url']}")
+                st.link_button("Abrir Âncora no Pastebin", url=data["url"])
+            else:
+                st.error(f"Erro ao criar âncora: {resp.text}")
+        except Exception as e:
+            st.error(f"Erro de conexão ao criar âncora: {e}")
 
 # ============================
 # ⛔ BLOQUEIO DE ESCRITA
@@ -4986,15 +5719,13 @@ st.download_button(
 st.divider()
 st.subheader("⛔ Proteção do sistema")
 
-if not result["valid"]:
+if not is_valid:
     st.error(
         """
         ⚠️ **A auditoria foi comprometida.**
 
-        Recomendações:
-        - Bloquear novas operações de escrita
-        - Investigar manualmente a base
-        - Gerar evidências
+        O sistema está agora em modo **SOMENTE LEITURA** para preservar as evidências.
+        Nenhuma nova inserção, atualização ou exclusão será permitida até que a integridade seja restaurada.
         """
     )
 else:

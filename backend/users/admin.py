@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from backend.audit.anchor import anchor_chain_to_pastebin
+from backend.audit.anchor import perform_anchoring
 from backend.audit.service import registrar_evento
 from backend.auth.dependencies import get_current_user, get_current_user_allow_password_change
 from backend.auth.permissions import require_role
@@ -192,8 +192,8 @@ def get_audit_evidence(user=Depends(get_current_user)):
 @router.post("/audit/anchor")
 def create_anchor(user=Depends(get_current_user)):
     """
-    Gera uma âncora criptográfica externa no Pastebin.
+    Gera âncoras criptográficas de auditoria (Local, Git e Pastebin se configurado).
     """
     require_role("admin")(user)
-    url = anchor_chain_to_pastebin(user.username)
-    return {"message": "Âncora criada com sucesso", "url": url}
+    results = perform_anchoring(user)
+    return {"message": "Âncora criada com sucesso", "details": results}
