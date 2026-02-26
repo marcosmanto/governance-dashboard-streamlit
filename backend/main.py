@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from backend.audit.middleware import AuditMiddleware
+from backend.audit.middleware import HeaderInjectionMiddleware
 from backend.audit.service import registrar_evento
 from backend.audit.verify import verificar_integridade_auditoria
 from backend.auth.dependencies import get_current_user
@@ -32,7 +32,7 @@ from backend.crud import (
     # deletar_registro,
     listar_registros,
     obter_registro_por_id,
-    # inserir_registro,
+    query,
     upsert_registro,
 )
 from backend.crud_auditoria import listar_auditoria
@@ -66,7 +66,7 @@ if settings.ENV == "dev":
 
 register_rate_limit_exception(app)
 
-app.add_middleware(AuditMiddleware)
+app.add_middleware(HeaderInjectionMiddleware)
 # 🔐 Rotas administrativas
 app.include_router(admin_router)
 # 🔓 Rotas públicas
@@ -81,12 +81,39 @@ def get_registros():  # user: User = Depends(get_current_user)):
 @app.post("/registros", status_code=201)
 def post_registro(
     registro: RegistroIn,
+    request: Request,
     user: UserContext = Depends(get_current_user),
 ):
     require_role("editor", "admin")(user)
     try:
         # inserir_registro(registro)
         upsert_registro(registro)
+
+        # 🔍 Recuperar o ID do registro inserido/atualizado para auditoria
+        # Como é um UPSERT via view, não temos o ID direto, precisamos consultar.
+        conn = connect()
+        try:
+            rows = query(
+                conn,
+                "SELECT id FROM registros WHERE data = :data AND categoria = :cat",
+                {"data": registro.data, "cat": registro.categoria},
+            )
+            resource_id = rows[0]["id"] if rows else None
+        finally:
+            conn.close()
+
+        registrar_evento(
+            username=user.username,
+            role=user.role,
+            action="UPSERT",
+            resource="registros",
+            resource_id=resource_id,
+            payload_before=None,  # Upsert é complexo de pegar o "antes" sem custo alto
+            payload_after=registro.model_dump(),
+            endpoint=request.url.path,
+            method=request.method,
+        )
+
         return {"message": "Registro inserido/atualizado (UPSERT) com sucesso"}
     except DuplicateKeyError:
         # Só ocorreria se você usar INSERT direto na tabela sem view, por exemplo.
