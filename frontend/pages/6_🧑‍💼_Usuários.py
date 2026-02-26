@@ -64,12 +64,12 @@ with tab_requests:
                         "✅ Aprovar",
                         key=f"app_{req['id']}",
                         type="primary",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         api._request("POST", f"/admin/role-requests/{req['id']}/approve")
                         st.rerun()
 
-                    if c3.button("❌ Rejeitar", key=f"rej_{req['id']}", use_container_width=True):
+                    if c3.button("❌ Rejeitar", key=f"rej_{req['id']}", width="stretch"):
                         api._request("POST", f"/admin/role-requests/{req['id']}/reject")
                         st.rerun()
     # histórico de pedidos
@@ -120,7 +120,7 @@ with tab_requests:
                     "created_at": "Solicitado em",
                     "processed_at": "Processado em",
                 },
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
             st.divider()

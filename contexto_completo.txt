@@ -2421,12 +2421,12 @@ FILE: .\backend\auth\dependencies.py
 import time
 from datetime import datetime, timezone
 
-from backend.core.logger import logger
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import ExpiredSignatureError, JWTError, jwt
 
 from backend.core.config import settings
+from backend.core.logger import logger
 from backend.db import connect, query
 from backend.models import User, UserContext
 
@@ -3302,12 +3302,15 @@ def reset_password_template(reset_link: str) -> str:
 ==================================================
 FILE: .\backend\users\admin.py
 ==================================================
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.audit.anchor import perform_anchoring
 from backend.audit.service import registrar_evento
 from backend.auth.dependencies import get_current_user, get_current_user_allow_password_change
 from backend.auth.permissions import require_role
+from backend.auth.service import revoke_all_sessions
 from backend.db import connect, execute, query
 from backend.users.password_reset_service import limpar_tokens_reset_expirados_ou_usados
 from backend.users.schemas import ChangePasswordIn
@@ -3501,6 +3504,85 @@ def create_anchor(user=Depends(get_current_user)):
     require_role("admin")(user)
     results = perform_anchoring(user)
     return {"message": "Âncora criada com sucesso", "details": results}
+
+
+@router.get("/role-requests")
+def list_role_requests(user=Depends(get_current_user)):
+    require_role("admin")(user)
+    conn = connect()
+    try:
+        return [
+            dict(row) for row in query(conn, "SELECT * FROM role_requests ORDER BY created_at DESC")
+        ]
+    finally:
+        conn.close()
+
+
+@router.post("/role-requests/{req_id}/{action}")
+def process_role_request(req_id: int, action: str, user=Depends(get_current_user)):
+    require_role("admin")(user)
+    if action not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="Ação inválida")
+
+    conn = connect()
+    try:
+        req = query(conn, "SELECT * FROM role_requests WHERE id = :id", {"id": req_id})
+        if not req:
+            raise HTTPException(404, "Solicitação não encontrada")
+        req = req[0]
+
+        if req["status"] != "PENDING":
+            raise HTTPException(400, "Solicitação já processada")
+
+        new_status = "APPROVED" if action == "approve" else "REJECTED"
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Atualiza status do pedido
+        execute(
+            conn,
+            """
+            UPDATE role_requests
+               SET status = :s, processed_at = :t, processed_by = :by
+             WHERE id = :id
+            """,
+            {"s": new_status, "t": now, "by": user.username, "id": req_id},
+        )
+
+        if action == "approve":
+            # 1. Atualiza Role do Usuário
+            execute(
+                conn,
+                "UPDATE users SET role = :r WHERE username = :u",
+                {"r": req["requested_role"], "u": req["username"]},
+            )
+            # 2. Revoga sessões (força re-login para pegar novo role)
+            revoke_all_sessions(req["username"], conn=conn)
+
+        # Auditoria
+        registrar_evento(
+            conn=conn,
+            username=user.username,
+            role=user.role,
+            action=f"ROLE_REQUEST_{new_status}",
+            resource="users",
+            resource_id=req_id,
+            payload_before={"role": "old_role_unknown", "request_status": "PENDING"},
+            payload_after={
+                "target_user": req["username"],
+                "new_role": req["requested_role"] if action == "approve" else None,
+                "status": new_status,
+            },
+            endpoint=f"/admin/role-requests/{req_id}/{action}",
+            method="POST",
+        )
+
+        conn.commit()
+        return {"message": f"Solicitação {new_status}"}
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
 
 
 ==================================================
@@ -3754,6 +3836,8 @@ FILE: .\backend\users\schemas.py
 ==================================================
 from pydantic import BaseModel
 
+from backend.models import Role
+
 
 class ChangePasswordIn(BaseModel):
     old_password: str
@@ -3764,6 +3848,11 @@ class UserProfileUpdate(BaseModel):
     email: str
     name: str
     fullname: str
+
+
+class RoleRequestIn(BaseModel):
+    requested_role: Role
+    justification: str
 
 
 ==================================================
@@ -4034,6 +4123,7 @@ def resetar_senha_por_token(*, username: str, nova_senha: str):
 FILE: .\backend\users\users.py
 ==================================================
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
@@ -4055,7 +4145,7 @@ from backend.users.password_reset_service import (
     validar_assinatura_token,
     validar_token_reset_senha,
 )
-from backend.users.schemas import UserProfileUpdate
+from backend.users.schemas import RoleRequestIn, UserProfileUpdate
 from backend.users.service import resetar_senha_por_token
 
 router = APIRouter(tags=["Users"])
@@ -4334,6 +4424,44 @@ def upload_avatar(
     return {"message": "Avatar atualizado", "path": db_path}
 
 
+@router.post("/me/role-request")
+def request_role_change(
+    payload: RoleRequestIn,
+    user: UserContext = Depends(get_current_user),
+):
+    if payload.requested_role == user.role:
+        raise HTTPException(status_code=400, detail="Você já possui este perfil.")
+
+    conn = connect()
+    try:
+        # Verifica se já existe pedido pendente
+        pending = query(
+            conn,
+            "SELECT 1 FROM role_requests WHERE username = :u AND status = 'PENDING'",
+            {"u": user.username},
+        )
+        if pending:
+            raise HTTPException(status_code=400, detail="Já existe uma solicitação pendente.")
+
+        execute(
+            conn,
+            """
+            INSERT INTO role_requests (username, requested_role, justification, created_at)
+            VALUES (:u, :r, :j, :t)
+            """,
+            {
+                "u": user.username,
+                "r": payload.requested_role,
+                "j": payload.justification,
+                "t": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        conn.commit()
+        return {"message": "Solicitação enviada para aprovação."}
+    finally:
+        conn.close()
+
+
 ==================================================
 FILE: .\frontend\app_config.py
 ==================================================
@@ -4544,13 +4672,13 @@ def render_user_menu(api, user):
             unsafe_allow_html=True,
         )
 
-        if st.button("👤 Meu Perfil", use_container_width=True):
+        if st.button("👤 Meu Perfil", width="stretch"):
             st.switch_page(Page.PROFILE.path)
 
-        if st.button("🔐 Trocar Senha", use_container_width=True):
+        if st.button("🔐 Trocar Senha", width="stretch"):
             st.switch_page(Page.CHANGE_PASSWORD.path)
 
-        if st.button("🚪 Sair", type="primary", use_container_width=True):
+        if st.button("🚪 Sair", type="primary", width="stretch"):
             api.logout()
             st.session_state.clear()
             st.switch_page(Page.LOGIN.path)
@@ -5423,7 +5551,7 @@ col1, col2 = st.columns([3, 1])
 with col2:
     if st.button(
         "🔄 Reexecutar verificação",
-        use_container_width=True,
+        width="stretch",
     ):
         st.rerun()
     st.space()
@@ -5530,14 +5658,14 @@ col1.download_button(
     data=json_bytes,
     file_name="relatorio_integridade.json",
     mime="application/json",
-    use_container_width=True,
+    width="stretch",
 )
 col2.download_button(
     label="📄 Baixar CSV",
     data=csv_bytes,
     file_name="relatorio_integridade.csv",
     mime="text/csv",
-    use_container_width=True,
+    width="stretch",
 )
 
 # ============================
@@ -5549,7 +5677,7 @@ st.caption(
     "Cria uma prova externa e imutável do estado atual da cadeia de auditoria, publicando o último hash em um serviço terceiro (Pastebin)."
 )
 
-if st.button("⚓ Criar Âncora no Pastebin", type="primary", use_container_width=True):
+if st.button("⚓ Criar Âncora no Pastebin", type="primary", width="stretch"):
     with st.spinner("Gerando âncora externa..."):
         try:
             resp = api._request("POST", "/admin/audit/anchor")
@@ -5607,31 +5735,113 @@ if user["role"] != "admin":
 
 st.title("🧑‍💼 Administração de Usuários")
 
-response = api._request("GET", "/admin/users")
+tab_users, tab_requests = st.tabs(["👥 Lista de Usuários", "📩 Solicitações de Acesso"])
 
-usuarios = response.json()
+with tab_users:
+    response = api._request("GET", "/admin/users")
+    usuarios = response.json()
+    df = pd.DataFrame(usuarios)
+    st.dataframe(df, width="stretch")
 
-df = pd.DataFrame(usuarios)
+    st.divider()
+    st.subheader("🔁 Reset de senha")
+    username = st.selectbox("Usuário", df["username"].tolist())
+    if st.button("Resetar senha", type="primary"):
+        resp = api._request("POST", f"/admin/users/{username}/reset-password")
+        if resp.status_code == 200:
+            senha = resp.json()
+            st.success("Senha resetada com sucesso")
+            st.divider()
+            st.error("⚠️ Senha temporária gerada")
+            st.code(senha["temporary_password"])
+            st.caption("Copie agora. Ela não será exibida novamente.")
+        else:
+            st.error(f"Erro ao resetar senha: ({resp.status_code})")
 
-st.dataframe(df, width="stretch")
-
-st.divider()
-
-st.subheader("🔁 Reset de senha")
-
-username = st.selectbox("Usuário", df["username"].tolist())
-
-if st.button("Resetar senha", type="primary"):
-    resp = api._request("POST", f"/admin/users/{username}/reset-password")
+with tab_requests:
+    st.subheader("Solicitações Pendentes")
+    resp = api._request("GET", "/admin/role-requests")
     if resp.status_code == 200:
-        senha = resp.json()
-        st.success("Senha resetada com sucesso")
-        st.divider()
-        st.error("⚠️ Senha temporária gerada")
-        st.code(senha["temporary_password"])
-        st.caption("Copie agora. Ela não será exibida novamente.")
+        requests_data = resp.json()
+        pending = [r for r in requests_data if r["status"] == "PENDING"]
+
+        if not pending:
+            st.info("Nenhuma solicitação pendente.")
+        else:
+            for req in pending:
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns([3, 1, 1])
+                    c1.markdown(f"**{req['username']}** deseja ser **{req['requested_role']}**")
+                    c1.caption(f"Justificativa: {req['justification']}")
+                    c1.caption(f"Data: {req['created_at']}")
+
+                    if c2.button(
+                        "✅ Aprovar",
+                        key=f"app_{req['id']}",
+                        type="primary",
+                        width="stretch",
+                    ):
+                        api._request("POST", f"/admin/role-requests/{req['id']}/approve")
+                        st.rerun()
+
+                    if c3.button("❌ Rejeitar", key=f"rej_{req['id']}", width="stretch"):
+                        api._request("POST", f"/admin/role-requests/{req['id']}/reject")
+                        st.rerun()
+    # histórico de pedidos
+    st.divider()
+    st.subheader("Histórico de Pedidos")
+
+    if resp.status_code == 200:
+        history = [r for r in requests_data if r["status"] != "PENDING"]
+        if not history:
+            st.info("Nenhum histórico de solicitações.")
+        else:
+            df_history = pd.DataFrame(history)
+            df_history["created_at"] = pd.to_datetime(df_history["created_at"]).dt.strftime(
+                "%d/%m/%Y %H:%M"
+            )
+            df_history["processed_at"] = pd.to_datetime(df_history["processed_at"]).dt.strftime(
+                "%d/%m/%Y %H:%M"
+            )
+
+            # Função para estilizar o status como um badge
+            def style_status(val):
+                if val == "APPROVED":
+                    # Verde sucesso (fundo translúcido, texto forte)
+                    return "background-color: rgba(25, 135, 84, 0.2); color: #198754; font-weight: bold; border-radius: 4px; padding: 2px 8px;"
+                elif val == "REJECTED":
+                    # Vermelho erro
+                    return "background-color: rgba(220, 53, 69, 0.2); color: #dc3545; font-weight: bold; border-radius: 4px; padding: 2px 8px;"
+                return ""
+
+            st.dataframe(
+                df_history[
+                    [
+                        "username",
+                        "requested_role",
+                        "justification",
+                        "status",
+                        "processed_by",
+                        "created_at",
+                        "processed_at",
+                    ]
+                ].style.map(style_status, subset=["status"]),
+                column_config={
+                    "username": "Usuário",
+                    "requested_role": "Perfil Solicitado",
+                    "justification": "Justificativa",
+                    "status": "Situação",
+                    "processed_by": "Processado por",
+                    "created_at": "Solicitado em",
+                    "processed_at": "Processado em",
+                },
+                width="stretch",
+                hide_index=True,
+            )
+            st.divider()
+
     else:
-        st.error(f"Erro ao resetar senha: ({resp.status_code})")
+        st.error(f"Erro ao buscar histórico: ({resp.status_code})")
 
 
 ==================================================
@@ -5986,6 +6196,37 @@ with col_avatar:
             img_url = f"https://ui-avatars.com/api/?name={nome}&background=random&size=150"
 
         st.image(img_url, width=150, caption="Avatar Atual")
+
+# --- Seção de Permissões ---
+st.divider()
+st.subheader("🛡️ Permissões e Acesso")
+st.info(f"Seu nível de acesso atual é: **{user.get('role', '').upper()}**")
+
+with st.expander("Solicitar mudança de nível de acesso"):
+    with st.form("role_request_form"):
+        new_role = st.selectbox("Nível desejado", ["editor", "admin", "reader"])
+        justification = st.text_area(
+            "Justificativa", placeholder="Explique por que precisa deste acesso..."
+        )
+
+        if st.form_submit_button("Enviar Solicitação"):
+            if new_role == user.get("role"):
+                st.warning("Você já possui este perfil.")
+            elif not justification.strip():
+                st.error("A justificativa é obrigatória.")
+            else:
+                try:
+                    resp = api._request(
+                        "POST",
+                        "/me/role-request",
+                        json={"requested_role": new_role, "justification": justification},
+                    )
+                    if resp.status_code == 200:
+                        st.success("Solicitação enviada! Um administrador analisará seu pedido.")
+                    else:
+                        st.error(resp.json().get("detail", "Erro ao enviar."))
+                except Exception as e:
+                    st.error(f"Erro: {e}")
 
 
 ==================================================
@@ -6653,6 +6894,22 @@ CREATE TABLE audit_integrity (
 -- Inicializa com estado saudável
 INSERT INTO audit_integrity (id, status, last_check_at)
 VALUES (1, 'OK', CURRENT_TIMESTAMP);
+
+==================================================
+FILE: .\migrations\V015__role_requests.sql
+==================================================
+CREATE TABLE role_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL,
+    requested_role TEXT NOT NULL,
+    justification TEXT,
+    status TEXT DEFAULT 'PENDING', -- PENDING, APPROVED, REJECTED
+    created_at TEXT NOT NULL,
+    processed_at TEXT,
+    processed_by TEXT,
+    FOREIGN KEY(username) REFERENCES users(username)
+);
+
 
 ==================================================
 FILE: .\scripts\start_all.sh

@@ -47,13 +47,13 @@ def render_user_menu(api, user):
             unsafe_allow_html=True,
         )
 
-        if st.button("👤 Meu Perfil", use_container_width=True):
+        if st.button("👤 Meu Perfil", width="stretch"):
             st.switch_page(Page.PROFILE.path)
 
-        if st.button("🔐 Trocar Senha", use_container_width=True):
+        if st.button("🔐 Trocar Senha", width="stretch"):
             st.switch_page(Page.CHANGE_PASSWORD.path)
 
-        if st.button("🚪 Sair", type="primary", use_container_width=True):
+        if st.button("🚪 Sair", type="primary", width="stretch"):
             api.logout()
             st.session_state.clear()
             st.switch_page(Page.LOGIN.path)

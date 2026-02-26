@@ -26,7 +26,7 @@ col1, col2 = st.columns([3, 1])
 with col2:
     if st.button(
         "🔄 Reexecutar verificação",
-        use_container_width=True,
+        width="stretch",
     ):
         st.rerun()
     st.space()
@@ -133,14 +133,14 @@ col1.download_button(
     data=json_bytes,
     file_name="relatorio_integridade.json",
     mime="application/json",
-    use_container_width=True,
+    width="stretch",
 )
 col2.download_button(
     label="📄 Baixar CSV",
     data=csv_bytes,
     file_name="relatorio_integridade.csv",
     mime="text/csv",
-    use_container_width=True,
+    width="stretch",
 )
 
 # ============================
@@ -152,7 +152,7 @@ st.caption(
     "Cria uma prova externa e imutável do estado atual da cadeia de auditoria, publicando o último hash em um serviço terceiro (Pastebin)."
 )
 
-if st.button("⚓ Criar Âncora no Pastebin", type="primary", use_container_width=True):
+if st.button("⚓ Criar Âncora no Pastebin", type="primary", width="stretch"):
     with st.spinner("Gerando âncora externa..."):
         try:
             resp = api._request("POST", "/admin/audit/anchor")
