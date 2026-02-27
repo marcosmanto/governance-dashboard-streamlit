@@ -319,7 +319,7 @@ def request_role_change(
         if pending:
             raise HTTPException(status_code=400, detail="Já existe uma solicitação pendente.")
 
-        execute(
+        cur = execute(
             conn,
             """
             INSERT INTO role_requests (username, requested_role, justification, created_at)
@@ -331,6 +331,21 @@ def request_role_change(
                 "j": payload.justification,
                 "t": datetime.now(timezone.utc).isoformat(),
             },
+        )
+        req_id = cur.lastrowid
+
+        # 🧾 Auditoria da Solicitação
+        registrar_evento(
+            conn=conn,
+            username=user.username,
+            role=user.role,
+            action="ROLE_CHANGE_REQUESTED",
+            resource="role_requests",
+            resource_id=req_id,
+            payload_before=None,
+            payload_after=payload.model_dump(),
+            endpoint="/me/role-request",
+            method="POST",
         )
         conn.commit()
         return {"message": "Solicitação enviada para aprovação."}

@@ -227,6 +227,13 @@ def process_role_request(req_id: int, action: str, user=Depends(get_current_user
             raise HTTPException(404, "Solicitação não encontrada")
         req = req[0]
 
+        # 🛑 Bloqueio de autoaprovação (Segregação de Funções)
+        if req["username"] == user.username:
+            raise HTTPException(
+                status_code=403,
+                detail="Administradores não podem processar suas próprias solicitações.",
+            )
+
         if req["status"] != "PENDING":
             raise HTTPException(400, "Solicitação já processada")
 
