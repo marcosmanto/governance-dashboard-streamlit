@@ -13,6 +13,7 @@ class User(BaseModel):
     name: str | None = None
     fullname: str | None = None
     avatar_path: str | None = None
+    mfa_enabled: bool = False
 
 
 class RegistroIn(BaseModel):

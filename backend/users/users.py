@@ -6,6 +6,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Up
 
 from backend.audit.service import registrar_evento
 from backend.auth.dependencies import get_current_user, get_current_user_profile
+from backend.auth.mfa import generate_mfa_secret, generate_qr_code_base64, get_totp_uri, verify_totp
+from backend.auth.passwords import verify_password
 from backend.auth.service import revoke_all_sessions
 from backend.core.config import settings
 from backend.core.logger import logger
@@ -349,5 +351,114 @@ def request_role_change(
         )
         conn.commit()
         return {"message": "Solicitação enviada para aprovação."}
+    finally:
+        conn.close()
+
+
+@router.post("/me/mfa/setup")
+def setup_mfa(user: UserContext = Depends(get_current_user)):
+    """
+    Inicia o processo de MFA: gera um segredo temporário e retorna o QR Code.
+    O segredo ainda NÃO é ativado (mfa_enabled=0) até que o usuário confirme.
+    """
+    secret = generate_mfa_secret()
+    uri = get_totp_uri(user.username, secret)
+    qr_b64 = generate_qr_code_base64(uri)
+
+    # Salva o segredo no banco, mas mantém mfa_enabled = 0
+    conn = connect()
+    try:
+        execute(
+            conn,
+            "UPDATE users SET mfa_secret = :secret, mfa_enabled = 0 WHERE username = :u",
+            {"secret": secret, "u": user.username},
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"secret": secret, "qr_code": qr_b64}
+
+
+@router.post("/me/mfa/enable")
+def enable_mfa(
+    payload: dict,  # espera {"code": "123456"}
+    user: UserContext = Depends(get_current_user),
+):
+    code = payload.get("code")
+    if not code:
+        raise HTTPException(400, "Código obrigatório")
+
+    conn = connect()
+    try:
+        rows = query(conn, "SELECT mfa_secret FROM users WHERE username = :u", {"u": user.username})
+        if not rows or not rows[0]["mfa_secret"]:
+            raise HTTPException(400, "MFA não iniciado. Chame /setup primeiro.")
+
+        secret = rows[0]["mfa_secret"]
+
+        if not verify_totp(secret, code):
+            raise HTTPException(400, "Código inválido. Tente novamente.")
+
+        execute(conn, "UPDATE users SET mfa_enabled = 1 WHERE username = :u", {"u": user.username})
+
+        registrar_evento(
+            conn=conn,
+            username=user.username,
+            role=user.role,
+            action="MFA_ENABLED",
+            resource="users",
+            resource_id=None,
+            payload_before=None,
+            payload_after=None,
+            endpoint="/me/mfa/enable",
+            method="POST",
+        )
+        conn.commit()
+        return {"message": "MFA ativado com sucesso!"}
+    finally:
+        conn.close()
+
+
+@router.post("/me/mfa/disable")
+def disable_mfa(
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    password = payload.get("password")
+    if not password:
+        raise HTTPException(status_code=400, detail="Senha obrigatória")
+
+    conn = connect()
+    try:
+        rows = query(
+            conn, "SELECT password_hash FROM users WHERE username = :u", {"u": user.username}
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+        if not verify_password(password, rows[0]["password_hash"]):
+            raise HTTPException(status_code=400, detail="Senha incorreta")
+
+        execute(
+            conn,
+            "UPDATE users SET mfa_enabled = 0, mfa_secret = NULL WHERE username = :u",
+            {"u": user.username},
+        )
+
+        registrar_evento(
+            conn=conn,
+            username=user.username,
+            role=user.role,
+            action="MFA_DISABLED",
+            resource="users",
+            resource_id=None,
+            payload_before=None,
+            payload_after=None,
+            endpoint="/me/mfa/disable",
+            method="POST",
+        )
+        conn.commit()
+        return {"message": "MFA desativado"}
     finally:
         conn.close()

@@ -1,3 +1,4 @@
+import base64
 import time
 
 import requests
@@ -145,3 +146,77 @@ with st.expander("Solicitar mudança de nível de acesso"):
                         st.error(resp.json().get("detail", "Erro ao enviar."))
                 except Exception as e:
                     st.error(f"Erro: {e}")
+
+# --- Seção de Segurança (MFA) ---
+st.divider()
+st.subheader("🔐 Autenticação de Dois Fatores (2FA)")
+
+
+@st.dialog("⚠️ Desativar 2FA")
+def disable_mfa_dialog():
+    st.write(
+        "Para sua segurança, confirme sua senha atual para desativar a autenticação de dois fatores."
+    )
+    password = st.text_input("Senha atual", type="password")
+
+    if st.button("Confirmar Desativação", type="primary"):
+        if not password:
+            st.error("Informe a senha.")
+            return
+
+        try:
+            resp = api._request("POST", "/me/mfa/disable", json={"password": password})
+            if resp.status_code == 200:
+                st.success("2FA desativado com sucesso!")
+                # 🔄 Recarrega dados do backend
+                user_resp = api._request("GET", "/me")
+                if user_resp.status_code == 200:
+                    st.session_state.user = user_resp.json()
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error(resp.json().get("detail", "Erro ao desativar"))
+        except Exception as e:
+            st.error(f"Erro: {e}")
+
+
+if user.get("mfa_enabled"):
+    st.success("✅ 2FA Ativado", icon="🛡️")
+    if st.button("Desativar 2FA"):
+        disable_mfa_dialog()
+else:
+    st.info("Proteja sua conta ativando a autenticação de dois fatores.")
+
+    if st.button("Configurar / Ativar 2FA"):
+        with st.spinner("Gerando QR Code..."):
+            try:
+                resp = api._request("POST", "/me/mfa/setup")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    st.session_state.mfa_setup_data = data
+                else:
+                    st.error("Erro ao iniciar configuração 2FA")
+            except Exception as e:
+                st.error(f"Erro: {e}")
+
+if "mfa_setup_data" in st.session_state:
+    data = st.session_state.mfa_setup_data
+    st.info(
+        "Escaneie o QR Code abaixo com seu aplicativo autenticador (Google Authenticator, Authy, etc)."
+    )
+
+    # Exibir QR Code
+    st.image(base64.b64decode(data["qr_code"]), width=200)
+    st.text_input("Segredo (caso não consiga ler o QR)", value=data["secret"], disabled=True)
+
+    code = st.text_input("Digite o código de 6 dígitos gerado pelo app", max_chars=6)
+
+    if st.button("Validar e Ativar"):
+        resp = api._request("POST", "/me/mfa/enable", json={"code": code})
+        if resp.status_code == 200:
+            st.success("✅ 2FA Ativado com sucesso! Você precisará dele no próximo login.")
+            del st.session_state.mfa_setup_data
+            time.sleep(3)
+            st.rerun()
+        else:
+            st.error(resp.json().get("detail", "Código inválido"))

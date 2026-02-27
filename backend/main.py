@@ -14,6 +14,7 @@ from backend.audit.service import registrar_evento
 from backend.audit.verify import verificar_integridade_auditoria
 from backend.auth.dependencies import get_current_user
 from backend.auth.jwt import decode_token
+from backend.auth.mfa import verify_totp
 from backend.auth.permissions import require_role
 from backend.auth.service import (
     cleanup_expired_sessions,
@@ -225,14 +226,24 @@ def logout_all(user: UserContext = Depends(get_current_user)):
 
 @app.post("/login", response_model=UserLoginOut)
 @limiter.limit("5/minute")
-def login(request: Request, username: str, password: str):
+def login(request: Request, username: str, password: str, otp_code: str | None = None):
     user = authenticate_user(username, password)
     if not user:
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
+    # 🔐 Verificação de MFA
+    if user.get("mfa_enabled"):
+        if not otp_code:
+            raise HTTPException(status_code=401, detail="MFA_REQUIRED")
+
+        if not verify_totp(user["mfa_secret"], otp_code):
+            raise HTTPException(status_code=401, detail="Código 2FA inválido")
+
     access_token, refresh_token = login_user(
         user["username"],
         user["role"],
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
     )
 
     if user["must_change_password"]:

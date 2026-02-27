@@ -19,8 +19,7 @@ def authenticate_user(username: str, password: str):
         rows = query(
             conn,
             """
-            SELECT username, password_hash, role, is_active, must_change_password, password_expires_at,
-                   email, name, fullname, avatar_path
+            SELECT username, password_hash, role, is_active, must_change_password, password_expires_at, mfa_secret, mfa_enabled, email, name, fullname, avatar_path
               FROM users
              WHERE username = :username
             """,
@@ -63,6 +62,8 @@ def authenticate_user(username: str, password: str):
         "must_change_password": bool(user["must_change_password"]),
         "password_expiring_soon": expiring_soon,
         "password_days_remaining": days_remaining,
+        "mfa_secret": user["mfa_secret"],
+        "mfa_enabled": bool(user["mfa_enabled"]),
     }
 
 

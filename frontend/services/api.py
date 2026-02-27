@@ -175,12 +175,16 @@ class APIClient:
             timeout=self.timeout,
         )
 
-    def login(self, username: str, password: str):
+    def login(self, username: str, password: str, otp_code: str | None = None):
+        params = {
+            "username": username,
+            "password": password,
+        }
+        if otp_code:
+            params["otp_code"] = otp_code
+
         return requests.post(
             f"{self.base_url}/login",
-            params={
-                "username": username,
-                "password": password,
-            },
+            params=params,
             timeout=self.timeout,
         )

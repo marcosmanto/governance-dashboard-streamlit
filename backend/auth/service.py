@@ -1,15 +1,17 @@
 import uuid
 from datetime import datetime, timezone
 
-from backend.core.logger import logger
 from fastapi import HTTPException
 
 from backend.auth.jwt import create_token
 from backend.core.config import ACCESS_TOKEN_EXPIRE, REFRESH_TOKEN_EXPIRE, settings
+from backend.core.logger import logger
 from backend.db import connect, execute, query
 
 
-def login_user(username: str, role: str):
+def login_user(
+    username: str, role: str, ip_address: str | None = None, user_agent: str | None = None
+):
     session_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
 
@@ -41,8 +43,8 @@ def login_user(username: str, role: str):
             conn,
             """
             INSERT INTO user_sessions
-            (id, username, role, created_at, expires_at)
-            VALUES (:id, :username, :role, :created_at, :expires_at)
+            (id, username, role, created_at, expires_at, ip_address, user_agent)
+            VALUES (:id, :username, :role, :created_at, :expires_at, :ip_address, :user_agent)
             """,
             {
                 "id": session_id,
@@ -50,6 +52,8 @@ def login_user(username: str, role: str):
                 "role": role,
                 "created_at": now.isoformat(),
                 "expires_at": (now + REFRESH_TOKEN_EXPIRE).isoformat(),
+                "ip_address": ip_address,
+                "user_agent": user_agent,
             },
         )
         conn.commit()

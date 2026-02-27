@@ -108,6 +108,12 @@ with st.container(
     username = st.text_input("Usuário", key="login_username")
     with st.form("login", enter_to_submit=True):
         password = st.text_input("Senha", type="password", key="login_password")
+        otp_code = st.text_input(
+            "Código 2FA (se ativado)",
+            max_chars=6,
+            key="login_otp",
+            help="Deixe em branco se não usar 2FA",
+        )
         can_submit = bool(st.session_state.get("login_username", "").strip())
 
         submitted = st.form_submit_button(
@@ -138,7 +144,9 @@ with st.container(
             else:
                 try:
                     with st.spinner("Entrando..."):
-                        resp = api.login(st.session_state.get("login_username", ""), password)
+                        resp = api.login(
+                            st.session_state.get("login_username", ""), password, otp_code
+                        )
 
                     if resp.status_code == 403:
                         try:
@@ -149,6 +157,12 @@ with st.container(
                         if detail in ("PASSWORD_CHANGE_REQUIRED", "PASSWORD_EXPIRED"):
                             st.session_state.login_error_message = detail
                             raise ValueError(detail)
+
+                    if resp.status_code == 401 and resp.json().get("detail") == "MFA_REQUIRED":
+                        st.session_state.login_error_message = (
+                            "⚠️ Autenticação de dois fatores obrigatória. Digite o código."
+                        )
+                        raise ValueError("MFA_REQUIRED")
 
                     if resp.status_code != 200:
                         st.session_state.login_error_message = "Usuário ou senha inválidos"
@@ -183,7 +197,7 @@ with st.container(
                     st.switch_page("Home.py")
 
                 except Exception as e:
-                    if str(e) == "LOGIN_INVALID" or str(e) == detail:
+                    if str(e) in ["LOGIN_INVALID", "MFA_REQUIRED"] or str(e) == detail:
                         # erro já exibido acima
                         pass
                     else:

@@ -125,7 +125,7 @@ def get_current_user_profile(
     try:
         user_data = query(
             conn,
-            "SELECT username, role, email, name, fullname, avatar_path FROM users WHERE username = :username",
+            "SELECT username, role, email, name, fullname, avatar_path, mfa_enabled FROM users WHERE username = :username",
             {"username": user_context.username},
         )
         if not user_data:
