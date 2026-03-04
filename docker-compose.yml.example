@@ -1,0 +1,47 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    volumes:
+      - ./data:/app/data  # Persistência do banco SQLite
+      - ./backend/static:/app/backend/static # Persistência de avatares
+    environment:
+      - ENV=prod
+      - DB_BACKEND=sqlite
+      - DB_DSN=/app/data/dados.db
+      - JWT_SECRET=SUA_CHAVE_SECRETA_AQUI_MUDE_ISSO
+      # Configurações de E-mail (opcional para teste)
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USER=seu_email@gmail.com
+      - SMTP_PASSWORD=sua_senha_app
+      - EMAIL_FROM=no-reply@governance.com
+      # URL que o backend usará para gerar links (ex: reset de senha)
+      - FRONTEND_URL=https://${VM_IP}
+    restart: always
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      # O frontend (Python) e o navegador precisam saber onde está a API.
+      # Como estamos usando Nginx, a API está em /api no mesmo domínio/IP.
+      - API_BASE_URL=https://${VM_IP}/api
+    depends_on:
+      - backend
+    restart: always
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      - ./nginx/certs:/etc/nginx/certs
+    depends_on:
+      - backend
+      - frontend
+    restart: always
