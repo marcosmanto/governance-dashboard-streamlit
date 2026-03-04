@@ -18,6 +18,9 @@ COPY . .
 # Cria diretórios necessários para persistência
 RUN mkdir -p data backend/static
 
+# Garante que o Python encontre os módulos a partir da raiz do projeto (/app)
+ENV PYTHONPATH=/app
+
 # Expõe a porta (apenas documentação, quem expõe de verdade é o docker-compose)
 EXPOSE 8000
 
