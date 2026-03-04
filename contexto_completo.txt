@@ -810,6 +810,8 @@ passlib[bcrypt]
 bcrypt<4
 slowapi
 requests
+pyotp
+qrcode
 
 ==================================================
 FILE: .\TEMP_todelete.txt
@@ -1485,6 +1487,7 @@ from backend.audit.service import registrar_evento
 from backend.audit.verify import verificar_integridade_auditoria
 from backend.auth.dependencies import get_current_user
 from backend.auth.jwt import decode_token
+from backend.auth.mfa import verify_totp
 from backend.auth.permissions import require_role
 from backend.auth.service import (
     cleanup_expired_sessions,
@@ -1696,14 +1699,24 @@ def logout_all(user: UserContext = Depends(get_current_user)):
 
 @app.post("/login", response_model=UserLoginOut)
 @limiter.limit("5/minute")
-def login(request: Request, username: str, password: str):
+def login(request: Request, username: str, password: str, otp_code: str | None = None):
     user = authenticate_user(username, password)
     if not user:
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
+    # 🔐 Verificação de MFA
+    if user.get("mfa_enabled"):
+        if not otp_code:
+            raise HTTPException(status_code=401, detail="MFA_REQUIRED")
+
+        if not verify_totp(user["mfa_secret"], otp_code):
+            raise HTTPException(status_code=401, detail="Código 2FA inválido")
+
     access_token, refresh_token = login_user(
         user["username"],
         user["role"],
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
     )
 
     if user["must_change_password"]:
@@ -1806,6 +1819,7 @@ class User(BaseModel):
     name: str | None = None
     fullname: str | None = None
     avatar_path: str | None = None
+    mfa_enabled: bool = False
 
 
 class RegistroIn(BaseModel):
@@ -2545,7 +2559,7 @@ def get_current_user_profile(
     try:
         user_data = query(
             conn,
-            "SELECT username, role, email, name, fullname, avatar_path FROM users WHERE username = :username",
+            "SELECT username, role, email, name, fullname, avatar_path, mfa_enabled FROM users WHERE username = :username",
             {"username": user_context.username},
         )
         if not user_data:
@@ -2617,6 +2631,40 @@ def decode_token(token: str = Depends(oauth2_scheme)) -> dict:
 
 
 ==================================================
+FILE: .\backend\auth\mfa.py
+==================================================
+import base64
+import io
+
+import pyotp
+import qrcode
+
+
+def generate_mfa_secret() -> str:
+    """Gera um segredo aleatório base32 para TOTP."""
+    return pyotp.random_base32()
+
+
+def get_totp_uri(username: str, secret: str, issuer_name: str = "GovernanceDashboard") -> str:
+    """Gera a URI padrão para QR Codes."""
+    return pyotp.totp.TOTP(secret).provisioning_uri(name=username, issuer_name=issuer_name)
+
+
+def verify_totp(secret: str, code: str) -> bool:
+    """Verifica se o código informado é válido para o segredo."""
+    totp = pyotp.TOTP(secret)
+    return totp.verify(code)
+
+
+def generate_qr_code_base64(uri: str) -> str:
+    """Gera imagem do QR Code em base64 para exibir no frontend."""
+    img = qrcode.make(uri)
+    buffered = io.BytesIO()
+    img.save(buffered, format="PNG")
+    return base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+
+==================================================
 FILE: .\backend\auth\passwords.py
 ==================================================
 from passlib.context import CryptContext
@@ -2663,15 +2711,17 @@ FILE: .\backend\auth\service.py
 import uuid
 from datetime import datetime, timezone
 
-from backend.core.logger import logger
 from fastapi import HTTPException
 
 from backend.auth.jwt import create_token
 from backend.core.config import ACCESS_TOKEN_EXPIRE, REFRESH_TOKEN_EXPIRE, settings
+from backend.core.logger import logger
 from backend.db import connect, execute, query
 
 
-def login_user(username: str, role: str):
+def login_user(
+    username: str, role: str, ip_address: str | None = None, user_agent: str | None = None
+):
     session_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
 
@@ -2703,8 +2753,8 @@ def login_user(username: str, role: str):
             conn,
             """
             INSERT INTO user_sessions
-            (id, username, role, created_at, expires_at)
-            VALUES (:id, :username, :role, :created_at, :expires_at)
+            (id, username, role, created_at, expires_at, ip_address, user_agent)
+            VALUES (:id, :username, :role, :created_at, :expires_at, :ip_address, :user_agent)
             """,
             {
                 "id": session_id,
@@ -2712,6 +2762,8 @@ def login_user(username: str, role: str):
                 "role": role,
                 "created_at": now.isoformat(),
                 "expires_at": (now + REFRESH_TOKEN_EXPIRE).isoformat(),
+                "ip_address": ip_address,
+                "user_agent": user_agent,
             },
         )
         conn.commit()
@@ -3531,6 +3583,13 @@ def process_role_request(req_id: int, action: str, user=Depends(get_current_user
             raise HTTPException(404, "Solicitação não encontrada")
         req = req[0]
 
+        # 🛑 Bloqueio de autoaprovação (Segregação de Funções)
+        if req["username"] == user.username:
+            raise HTTPException(
+                status_code=403,
+                detail="Administradores não podem processar suas próprias solicitações.",
+            )
+
         if req["status"] != "PENDING":
             raise HTTPException(400, "Solicitação já processada")
 
@@ -3879,8 +3938,7 @@ def authenticate_user(username: str, password: str):
         rows = query(
             conn,
             """
-            SELECT username, password_hash, role, is_active, must_change_password, password_expires_at,
-                   email, name, fullname, avatar_path
+            SELECT username, password_hash, role, is_active, must_change_password, password_expires_at, mfa_secret, mfa_enabled, email, name, fullname, avatar_path
               FROM users
              WHERE username = :username
             """,
@@ -3923,6 +3981,8 @@ def authenticate_user(username: str, password: str):
         "must_change_password": bool(user["must_change_password"]),
         "password_expiring_soon": expiring_soon,
         "password_days_remaining": days_remaining,
+        "mfa_secret": user["mfa_secret"],
+        "mfa_enabled": bool(user["mfa_enabled"]),
     }
 
 
@@ -4130,6 +4190,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Up
 
 from backend.audit.service import registrar_evento
 from backend.auth.dependencies import get_current_user, get_current_user_profile
+from backend.auth.mfa import generate_mfa_secret, generate_qr_code_base64, get_totp_uri, verify_totp
+from backend.auth.passwords import verify_password
 from backend.auth.service import revoke_all_sessions
 from backend.core.config import settings
 from backend.core.logger import logger
@@ -4443,7 +4505,7 @@ def request_role_change(
         if pending:
             raise HTTPException(status_code=400, detail="Já existe uma solicitação pendente.")
 
-        execute(
+        cur = execute(
             conn,
             """
             INSERT INTO role_requests (username, requested_role, justification, created_at)
@@ -4456,8 +4518,132 @@ def request_role_change(
                 "t": datetime.now(timezone.utc).isoformat(),
             },
         )
+        req_id = cur.lastrowid
+
+        # 🧾 Auditoria da Solicitação
+        registrar_evento(
+            conn=conn,
+            username=user.username,
+            role=user.role,
+            action="ROLE_CHANGE_REQUESTED",
+            resource="role_requests",
+            resource_id=req_id,
+            payload_before=None,
+            payload_after=payload.model_dump(),
+            endpoint="/me/role-request",
+            method="POST",
+        )
         conn.commit()
         return {"message": "Solicitação enviada para aprovação."}
+    finally:
+        conn.close()
+
+
+@router.post("/me/mfa/setup")
+def setup_mfa(user: UserContext = Depends(get_current_user)):
+    """
+    Inicia o processo de MFA: gera um segredo temporário e retorna o QR Code.
+    O segredo ainda NÃO é ativado (mfa_enabled=0) até que o usuário confirme.
+    """
+    secret = generate_mfa_secret()
+    uri = get_totp_uri(user.username, secret)
+    qr_b64 = generate_qr_code_base64(uri)
+
+    # Salva o segredo no banco, mas mantém mfa_enabled = 0
+    conn = connect()
+    try:
+        execute(
+            conn,
+            "UPDATE users SET mfa_secret = :secret, mfa_enabled = 0 WHERE username = :u",
+            {"secret": secret, "u": user.username},
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"secret": secret, "qr_code": qr_b64}
+
+
+@router.post("/me/mfa/enable")
+def enable_mfa(
+    payload: dict,  # espera {"code": "123456"}
+    user: UserContext = Depends(get_current_user),
+):
+    code = payload.get("code")
+    if not code:
+        raise HTTPException(400, "Código obrigatório")
+
+    conn = connect()
+    try:
+        rows = query(conn, "SELECT mfa_secret FROM users WHERE username = :u", {"u": user.username})
+        if not rows or not rows[0]["mfa_secret"]:
+            raise HTTPException(400, "MFA não iniciado. Chame /setup primeiro.")
+
+        secret = rows[0]["mfa_secret"]
+
+        if not verify_totp(secret, code):
+            raise HTTPException(400, "Código inválido. Tente novamente.")
+
+        execute(conn, "UPDATE users SET mfa_enabled = 1 WHERE username = :u", {"u": user.username})
+
+        registrar_evento(
+            conn=conn,
+            username=user.username,
+            role=user.role,
+            action="MFA_ENABLED",
+            resource="users",
+            resource_id=None,
+            payload_before=None,
+            payload_after=None,
+            endpoint="/me/mfa/enable",
+            method="POST",
+        )
+        conn.commit()
+        return {"message": "MFA ativado com sucesso!"}
+    finally:
+        conn.close()
+
+
+@router.post("/me/mfa/disable")
+def disable_mfa(
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    password = payload.get("password")
+    if not password:
+        raise HTTPException(status_code=400, detail="Senha obrigatória")
+
+    conn = connect()
+    try:
+        rows = query(
+            conn, "SELECT password_hash FROM users WHERE username = :u", {"u": user.username}
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+        if not verify_password(password, rows[0]["password_hash"]):
+            raise HTTPException(status_code=400, detail="Senha incorreta")
+
+        execute(
+            conn,
+            "UPDATE users SET mfa_enabled = 0, mfa_secret = NULL WHERE username = :u",
+            {"u": user.username},
+        )
+
+        registrar_evento(
+            conn=conn,
+            username=user.username,
+            role=user.role,
+            action="MFA_DISABLED",
+            resource="users",
+            resource_id=None,
+            payload_before=None,
+            payload_after=None,
+            endpoint="/me/mfa/disable",
+            method="POST",
+        )
+        conn.commit()
+        return {"message": "MFA desativado"}
     finally:
         conn.close()
 
@@ -4924,6 +5110,12 @@ with st.container(
     username = st.text_input("Usuário", key="login_username")
     with st.form("login", enter_to_submit=True):
         password = st.text_input("Senha", type="password", key="login_password")
+        otp_code = st.text_input(
+            "Código 2FA (se ativado)",
+            max_chars=6,
+            key="login_otp",
+            help="Deixe em branco se não usar 2FA",
+        )
         can_submit = bool(st.session_state.get("login_username", "").strip())
 
         submitted = st.form_submit_button(
@@ -4954,7 +5146,9 @@ with st.container(
             else:
                 try:
                     with st.spinner("Entrando..."):
-                        resp = api.login(st.session_state.get("login_username", ""), password)
+                        resp = api.login(
+                            st.session_state.get("login_username", ""), password, otp_code
+                        )
 
                     if resp.status_code == 403:
                         try:
@@ -4965,6 +5159,12 @@ with st.container(
                         if detail in ("PASSWORD_CHANGE_REQUIRED", "PASSWORD_EXPIRED"):
                             st.session_state.login_error_message = detail
                             raise ValueError(detail)
+
+                    if resp.status_code == 401 and resp.json().get("detail") == "MFA_REQUIRED":
+                        st.session_state.login_error_message = (
+                            "⚠️ Autenticação de dois fatores obrigatória. Digite o código."
+                        )
+                        raise ValueError("MFA_REQUIRED")
 
                     if resp.status_code != 200:
                         st.session_state.login_error_message = "Usuário ou senha inválidos"
@@ -4999,7 +5199,7 @@ with st.container(
                     st.switch_page("Home.py")
 
                 except Exception as e:
-                    if str(e) == "LOGIN_INVALID" or str(e) == detail:
+                    if str(e) in ["LOGIN_INVALID", "MFA_REQUIRED"] or str(e) == detail:
                         # erro já exibido acima
                         pass
                     else:
@@ -6080,6 +6280,7 @@ if st.button("Redefinir", type="primary"):
 ==================================================
 FILE: .\frontend\pages\9_👤_Perfil.py
 ==================================================
+import base64
 import time
 
 import requests
@@ -6227,6 +6428,80 @@ with st.expander("Solicitar mudança de nível de acesso"):
                         st.error(resp.json().get("detail", "Erro ao enviar."))
                 except Exception as e:
                     st.error(f"Erro: {e}")
+
+# --- Seção de Segurança (MFA) ---
+st.divider()
+st.subheader("🔐 Autenticação de Dois Fatores (2FA)")
+
+
+@st.dialog("⚠️ Desativar 2FA")
+def disable_mfa_dialog():
+    st.write(
+        "Para sua segurança, confirme sua senha atual para desativar a autenticação de dois fatores."
+    )
+    password = st.text_input("Senha atual", type="password")
+
+    if st.button("Confirmar Desativação", type="primary"):
+        if not password:
+            st.error("Informe a senha.")
+            return
+
+        try:
+            resp = api._request("POST", "/me/mfa/disable", json={"password": password})
+            if resp.status_code == 200:
+                st.success("2FA desativado com sucesso!")
+                # 🔄 Recarrega dados do backend
+                user_resp = api._request("GET", "/me")
+                if user_resp.status_code == 200:
+                    st.session_state.user = user_resp.json()
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error(resp.json().get("detail", "Erro ao desativar"))
+        except Exception as e:
+            st.error(f"Erro: {e}")
+
+
+if user.get("mfa_enabled"):
+    st.success("✅ 2FA Ativado", icon="🛡️")
+    if st.button("Desativar 2FA"):
+        disable_mfa_dialog()
+else:
+    st.info("Proteja sua conta ativando a autenticação de dois fatores.")
+
+    if st.button("Configurar / Ativar 2FA"):
+        with st.spinner("Gerando QR Code..."):
+            try:
+                resp = api._request("POST", "/me/mfa/setup")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    st.session_state.mfa_setup_data = data
+                else:
+                    st.error("Erro ao iniciar configuração 2FA")
+            except Exception as e:
+                st.error(f"Erro: {e}")
+
+if "mfa_setup_data" in st.session_state:
+    data = st.session_state.mfa_setup_data
+    st.info(
+        "Escaneie o QR Code abaixo com seu aplicativo autenticador (Google Authenticator, Authy, etc)."
+    )
+
+    # Exibir QR Code
+    st.image(base64.b64decode(data["qr_code"]), width=200)
+    st.text_input("Segredo (caso não consiga ler o QR)", value=data["secret"], disabled=True)
+
+    code = st.text_input("Digite o código de 6 dígitos gerado pelo app", max_chars=6)
+
+    if st.button("Validar e Ativar"):
+        resp = api._request("POST", "/me/mfa/enable", json={"code": code})
+        if resp.status_code == 200:
+            st.success("✅ 2FA Ativado com sucesso! Você precisará dele no próximo login.")
+            del st.session_state.mfa_setup_data
+            time.sleep(3)
+            st.rerun()
+        else:
+            st.error(resp.json().get("detail", "Código inválido"))
 
 
 ==================================================
@@ -6409,13 +6684,17 @@ class APIClient:
             timeout=self.timeout,
         )
 
-    def login(self, username: str, password: str):
+    def login(self, username: str, password: str, otp_code: str | None = None):
+        params = {
+            "username": username,
+            "password": password,
+        }
+        if otp_code:
+            params["otp_code"] = otp_code
+
         return requests.post(
             f"{self.base_url}/login",
-            params={
-                "username": username,
-                "password": password,
-            },
+            params=params,
             timeout=self.timeout,
         )
 
@@ -6910,6 +7189,17 @@ CREATE TABLE role_requests (
     FOREIGN KEY(username) REFERENCES users(username)
 );
 
+
+==================================================
+FILE: .\migrations\V016__mfa_and_session_meta.sql
+==================================================
+-- Adiciona suporte a MFA na tabela de usuários
+ALTER TABLE users ADD COLUMN mfa_secret TEXT;
+ALTER TABLE users ADD COLUMN mfa_enabled INTEGER DEFAULT 0;
+
+-- Adiciona metadados na tabela de sessões para auditoria
+ALTER TABLE user_sessions ADD COLUMN ip_address TEXT;
+ALTER TABLE user_sessions ADD COLUMN user_agent TEXT;
 
 ==================================================
 FILE: .\scripts\start_all.sh

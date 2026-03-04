@@ -1,3 +1,5 @@
+from datetime import time
+
 import pandas as pd
 import streamlit as st
 
@@ -26,7 +28,15 @@ with tab_users:
     response = api._request("GET", "/admin/users")
     usuarios = response.json()
     df = pd.DataFrame(usuarios)
-    st.dataframe(df, width="stretch")
+
+    # Formata coluna de MFA para visualização amigável
+    if "mfa_enabled" in df.columns:
+        df["2FA"] = df["mfa_enabled"].apply(lambda x: "✅ Ativo" if x else "❌ Inativo")
+
+    # Exibe tabela com colunas selecionadas
+    st.dataframe(
+        df[["id", "username", "role", "2FA", "created_at"]], width="stretch", hide_index=True
+    )
 
     st.divider()
     st.subheader("🔁 Reset de senha")
@@ -42,6 +52,33 @@ with tab_users:
             st.caption("Copie agora. Ela não será exibida novamente.")
         else:
             st.error(f"Erro ao resetar senha: ({resp.status_code})")
+
+    st.divider()
+    st.subheader("🛡️ Gestão de 2FA")
+
+    users_with_mfa = []
+    if "mfa_enabled" in df.columns:
+        users_with_mfa = df[df["mfa_enabled"].astype(bool)]["username"].tolist()
+
+    if not users_with_mfa:
+        st.info("Nenhum usuário com 2FA ativo.")
+    else:
+        user_mfa = st.selectbox("Usuário para remover 2FA", users_with_mfa, key="mfa_reset_select")
+        if st.button(
+            "Remover 2FA do Usuário",
+            type="primary",
+            help="Use isso se o usuário perdeu o acesso ao autenticador",
+        ):
+            with st.spinner("Removendo 2FA..."):
+                resp = api._request("POST", f"/admin/users/{user_mfa}/mfa/reset")
+                if resp.status_code == 200:
+                    st.success(
+                        f"2FA de **{user_mfa}** removido com sucesso. O usuário poderá logar apenas com senha."
+                    )
+                    time.sleep(2)
+                    st.rerun()
+                else:
+                    st.error(f"Erro ao remover 2FA: {resp.text}")
 
 with tab_requests:
     st.subheader("Solicitações Pendentes")

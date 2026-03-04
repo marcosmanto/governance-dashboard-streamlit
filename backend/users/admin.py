@@ -23,7 +23,7 @@ def listar_usuarios(user=Depends(get_current_user)):
         rows = query(
             conn,
             """
-            SELECT id, username, role, created_at
+            SELECT id, username, role, created_at, mfa_enabled
               FROM users
              ORDER BY username
             """,
@@ -281,6 +281,49 @@ def process_role_request(req_id: int, action: str, user=Depends(get_current_user
 
         conn.commit()
         return {"message": f"Solicitação {new_status}"}
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+
+
+@router.post("/users/{username}/mfa/reset")
+def reset_user_mfa(username: str, user=Depends(get_current_user)):
+    require_role("admin")(user)
+
+    conn = connect()
+    try:
+        # Verifica se usuário existe
+        rows = query(conn, "SELECT 1 FROM users WHERE username = :u", {"u": username})
+        if not rows:
+            raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+        # Reseta MFA
+        execute(
+            conn,
+            "UPDATE users SET mfa_enabled = 0, mfa_secret = NULL WHERE username = :u",
+            {"u": username},
+        )
+
+        # Revoga sessões por segurança (o usuário terá que logar de novo, agora sem MFA)
+        revoke_all_sessions(username, conn=conn)
+
+        registrar_evento(
+            conn=conn,
+            username=user.username,
+            role=user.role,
+            action="MFA_RESET_BY_ADMIN",
+            resource="users",
+            resource_id=None,
+            payload_before=None,
+            payload_after={"target_user": username},
+            endpoint=f"/admin/users/{username}/mfa/reset",
+            method="POST",
+        )
+
+        conn.commit()
+        return {"message": f"MFA do usuário {username} foi removido com sucesso."}
     except Exception as e:
         conn.rollback()
         raise e
