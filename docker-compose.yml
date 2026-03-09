@@ -27,6 +27,7 @@ services:
       - API_BASE_URL=https://${VM_IP}/api
       - ENV=prod
       - FRONTEND_URL=https://${VM_IP}
+      - SSL_VERIFY=false
     depends_on:
       - backend
     restart: always

@@ -6,6 +6,7 @@ class FrontendSettings(BaseSettings):
     ENV: str = "dev"
     API_BASE_URL: str = "http://localhost:8000"
     FRONTEND_URL: str = "http://localhost:8501"
+    SSL_VERIFY: bool = True  # Padrão seguro
 
     class Config:
         env_file = ".env"
