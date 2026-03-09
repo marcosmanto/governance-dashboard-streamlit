@@ -8,7 +8,7 @@ from jose import ExpiredSignatureError, JWTError, jwt
 from backend.core.config import settings
 from backend.core.logger import logger
 from backend.db import connect, query
-from backend.models import User, UserContext
+from shared.models import User, UserContext
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 

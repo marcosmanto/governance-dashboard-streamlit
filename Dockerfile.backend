@@ -1,4 +1,3 @@
-# backend/Dockerfile
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -12,16 +11,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copia o código do projeto
+# Copia todo o código-fonte
 COPY . .
 
-# Cria diretórios necessários para persistência
-RUN mkdir -p data backend/static
+# Define o PYTHONPATH para a pasta 'src', permitindo imports como 'from backend...'
+ENV PYTHONPATH=/app/src
 
-# Garante que o Python encontre os módulos a partir da raiz do projeto (/app)
-ENV PYTHONPATH=/app
-
-# Expõe a porta (apenas documentação, quem expõe de verdade é o docker-compose)
 EXPOSE 8000
 
 # Comando de inicialização:

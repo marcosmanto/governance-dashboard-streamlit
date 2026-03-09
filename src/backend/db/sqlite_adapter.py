@@ -8,7 +8,8 @@ from typing import Any, Dict, Iterable, Sequence, Tuple
 from .errors import DBError, DuplicateKeyError, ForeignKeyError
 
 # Caminho padrão do seu projeto: <repo>/data/dados.db
-_DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "dados.db"
+# Ajustado para estrutura src/: sobe 3 níveis (db -> backend -> src -> root)
+_DEFAULT_DB_PATH = Path(__file__).resolve().parents[3] / "data" / "dados.db"
 
 
 def connect(dsn: str | None = None) -> sqlite3.Connection:

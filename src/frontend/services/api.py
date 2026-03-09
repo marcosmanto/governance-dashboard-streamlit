@@ -5,7 +5,7 @@ import sys
 import requests
 import streamlit as st
 
-from backend.core.config import settings
+from frontend.config import settings
 from frontend.core.pages import Page
 from frontend.services.navigation import get_current_page
 

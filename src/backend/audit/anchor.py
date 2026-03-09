@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from backend.audit.service import obter_ultimo_hash
 from backend.core.config import settings
 from backend.db import connect
-from backend.models import UserContext
+from shared.models import UserContext
 
 # Cache simples para evitar login repetitivo no Pastebin
 _cached_user_key: str | None = None

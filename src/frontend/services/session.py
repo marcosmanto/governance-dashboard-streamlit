@@ -4,7 +4,7 @@ import time
 
 import streamlit as st
 
-from backend.core.config import settings
+from frontend.config import settings
 from frontend.core.pages import Page
 
 logger = logging.getLogger(__name__)

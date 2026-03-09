@@ -5,7 +5,7 @@ from fastapi import Request
 from fastapi.responses import Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from backend.models import UserContext
+from shared.models import UserContext
 
 
 class HeaderInjectionMiddleware(BaseHTTPMiddleware):

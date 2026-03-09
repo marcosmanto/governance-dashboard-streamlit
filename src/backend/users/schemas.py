@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 
-from backend.models import Role
+from shared.models import Role
 
 
 class ChangePasswordIn(BaseModel):

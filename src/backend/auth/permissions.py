@@ -1,6 +1,6 @@
 from fastapi import HTTPException, status
 
-from backend.models import UserContext
+from shared.models import UserContext
 
 
 def require_role(*allowed_roles: str):

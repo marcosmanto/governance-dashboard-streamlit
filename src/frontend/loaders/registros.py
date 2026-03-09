@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 from fastapi import Response
 
-from backend.core.config import settings
+from frontend.config import settings
 from frontend.services.api import APIClient
 
 

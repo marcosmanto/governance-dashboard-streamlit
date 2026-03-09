@@ -3,7 +3,7 @@
 set -euo pipefail
 # Inicia backend e frontend; encerra backend ao sair
 cd "$(dirname "$0")/.."
-export PYTHONPATH="$PWD"
+export PYTHONPATH="$PWD/src"
 
 uvicorn backend.main:app --reload &
 BACK_PID=$!
@@ -21,5 +21,5 @@ fi
 [ "$READY" -eq 1 ] && echo "[ok] backend no ar em http://127.0.0.1:8000" || echo "[info] seguindo sem checar disponibilidade do backend"
 
 # Streamlit em primeiro plano
-exec streamlit run frontend/Home.py
+exec streamlit run src/frontend/Home.py
 ``

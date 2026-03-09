@@ -10,7 +10,7 @@ from backend.auth.passwords import hash_password, verify_password
 from backend.auth.service import revoke_all_sessions
 from backend.core.config import settings
 from backend.db import connect, execute, query
-from backend.models import UserContext
+from shared.models import UserContext
 
 
 def authenticate_user(username: str, password: str):

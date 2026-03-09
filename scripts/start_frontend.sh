@@ -3,6 +3,6 @@
 set -euo pipefail
 # Inicia o frontend (Streamlit) a partir da raiz do projeto
 cd "$(dirname "$0")/.."
-export PYTHONPATH="$PWD"
-exec streamlit run frontend/Home.py
+export PYTHONPATH="$PWD/src"
+exec streamlit run src/frontend/Home.py
 ``

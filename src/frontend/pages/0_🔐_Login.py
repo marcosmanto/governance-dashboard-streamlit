@@ -3,8 +3,8 @@ import time
 import requests
 import streamlit as st
 
-from backend.core.config import settings
 from frontend.app_config import init_page
+from frontend.config import settings
 from frontend.core.pages import Page
 from frontend.services.api import APIClient
 

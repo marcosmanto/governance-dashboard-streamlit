@@ -1,6 +1,7 @@
 import logging
 import os
 from datetime import date
+from pathlib import Path
 from typing import List
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -40,17 +41,19 @@ from backend.crud import (
 from backend.crud_auditoria import listar_auditoria
 from backend.db import connect
 from backend.db.errors import DuplicateKeyError
-from backend.models import AuditoriaOut, RegistroIn, RegistroOut, User, UserContext, UserLoginOut
 from backend.users.admin import router as admin_router
 from backend.users.service import authenticate_user
 from backend.users.users import router as users_router
+from shared.models import AuditoriaOut, RegistroIn, RegistroOut, UserContext, UserLoginOut
 
 app = FastAPI(title="Governance Dashboard API")
 
 # Garante que o diretório de arquivos estáticos exista antes de montar
-os.makedirs("backend/static", exist_ok=True)
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+STATIC_DIR.mkdir(exist_ok=True)
 
-app.mount("/static", StaticFiles(directory="backend/static"), name="static")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter

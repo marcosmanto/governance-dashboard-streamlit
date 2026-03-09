@@ -12,7 +12,6 @@ from backend.auth.service import revoke_all_sessions
 from backend.core.config import settings
 from backend.core.logger import logger
 from backend.db import connect, execute, query
-from backend.models import User, UserContext
 from backend.notifications.email_service import send_email
 from backend.notifications.templates import reset_password_template
 from backend.users.models import ForgotPasswordIn, ResetPasswordIn
@@ -25,6 +24,7 @@ from backend.users.password_reset_service import (
 )
 from backend.users.schemas import RoleRequestIn, UserProfileUpdate
 from backend.users.service import resetar_senha_por_token
+from shared.models import User, UserContext
 
 router = APIRouter(tags=["Users"])
 
@@ -261,7 +261,8 @@ def upload_avatar(
         raise HTTPException(status_code=400, detail="FILE_TOO_LARGE")
 
     # 3. Preparar diretório e caminho
-    upload_dir = Path("backend/static/avatars")
+    # Usa caminho relativo ao arquivo atual para garantir que funcione dentro de src/
+    upload_dir = Path(__file__).resolve().parent.parent / "static" / "avatars"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     extension = ".png" if "png" in file.content_type else ".jpg"

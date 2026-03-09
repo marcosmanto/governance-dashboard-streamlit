@@ -3,7 +3,7 @@ from time import sleep
 import requests
 import streamlit as st
 
-from backend.core.config import settings
+from frontend.config import settings
 from frontend.core.pages import Page
 from frontend.layouts.base_layout import base_layout
 from frontend.services.navigation import set_current_page
