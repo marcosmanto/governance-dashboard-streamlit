@@ -142,6 +142,7 @@ with st.container(
                 for msg in errors:
                     st.error(msg)
             else:
+                detail = None
                 try:
                     with st.spinner("Entrando..."):
                         resp = api.login(

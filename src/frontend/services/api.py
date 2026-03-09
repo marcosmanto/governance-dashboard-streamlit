@@ -68,6 +68,8 @@ class APIClient:
             headers={
                 "Authorization": f"Bearer {self.refresh_token}",
             },
+            verify=settings.ENV != "dev",
+            timeout=10,
         )
         if resp.status_code != 200:
             return False
@@ -91,6 +93,8 @@ class APIClient:
             method,
             f"{self.base_url}{path}",
             headers=self._headers(),
+            verify=settings.ENV != "dev",
+            timeout=self.timeout,
             **kwargs,
         )
 
@@ -128,6 +132,8 @@ class APIClient:
             method,
             f"{self.base_url}{path}",
             headers=self._headers(),
+            verify=settings.ENV != "dev",
+            timeout=self.timeout,
             **kwargs,
         )
 
@@ -146,6 +152,7 @@ class APIClient:
     def listar_registros_publico(base_url: str, timeout: int = 10):
         return requests.get(
             f"{base_url.rstrip('/')}/registros",
+            verify=settings.ENV != "dev",
             timeout=timeout,
         )
 
@@ -172,6 +179,7 @@ class APIClient:
         return requests.post(
             f"{self.base_url}/logout",
             headers=self._headers(),
+            verify=settings.ENV != "dev",
             timeout=self.timeout,
         )
 
@@ -186,5 +194,6 @@ class APIClient:
         return requests.post(
             f"{self.base_url}/login",
             params=params,
+            verify=settings.ENV != "dev",
             timeout=self.timeout,
         )
