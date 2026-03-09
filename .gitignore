@@ -4,4 +4,3 @@
 # Backups de bancos na pasta data
 /data/dados.bak_*.db
 TEMP_todelete.txt
-docker-compose.yml

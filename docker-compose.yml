@@ -5,6 +5,9 @@ services:
       dockerfile: Dockerfile.backend
     volumes:
       - ./data:/app/data  # Persistência do banco SQLite
+      # O container do backend usará a pasta static que foi copiada para dentro dele, e as imagens de avatar salvas serão persistidas dentro do container (mas não no seu computador host, o que é um comportamento aceitável para avatares, a menos que você queira explicitamente que eles sobrevivam à recriação do container).
+      # Persistência de avatares que sobrevive à recrição do container
+      # - ./src/backend/static:/app/src/backend/static
     env_file:
       - .env
     environment:
