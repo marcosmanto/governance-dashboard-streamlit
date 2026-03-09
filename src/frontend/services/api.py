@@ -4,12 +4,18 @@ import sys
 
 import requests
 import streamlit as st
+import urllib3
 
 from frontend.config import settings
 from frontend.core.pages import Page
 from frontend.services.navigation import get_current_page
 
 logger = logging.getLogger(__name__)
+
+# 🔇 Silencia avisos de SSL inseguro (auto-assinado) se configurado
+if not settings.SSL_VERIFY:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 logger.setLevel(logging.INFO)
 
 if not logger.handlers:
