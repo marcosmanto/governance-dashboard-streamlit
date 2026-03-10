@@ -17,6 +17,9 @@ COPY . .
 # Define o PYTHONPATH para a pasta 'src', permitindo imports como 'from backend...'
 ENV PYTHONPATH=/app/src
 
+# Garante que os logs do Python (print) apareçam imediatamente no console do Docker
+ENV PYTHONUNBUFFERED=1
+
 EXPOSE 8000
 
 # Comando de inicialização:
