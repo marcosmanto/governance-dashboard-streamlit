@@ -87,6 +87,7 @@ with col_avatar:
                         headers={"Authorization": f"Bearer {st.session_state.access_token}"},
                         files=files,
                         timeout=15,
+                        verify=settings.SSL_VERIFY,
                     )
 
                     if resp.status_code == 200:

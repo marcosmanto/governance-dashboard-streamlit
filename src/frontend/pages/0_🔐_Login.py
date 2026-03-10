@@ -88,6 +88,7 @@ def forgot_password_dialog(prefill_username: str | None = None):
                     f"{settings.API_BASE_URL}/forgot-password",
                     json={"username": username.strip()},
                     timeout=10,
+                    verify=settings.SSL_VERIFY,
                 )
                 # 🔒 Sempre resposta genérica
                 st.success("Se o usuário existir, você receberá instruções para redefinir a senha.")

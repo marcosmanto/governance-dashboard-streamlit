@@ -33,6 +33,7 @@ if st.button("Redefinir", type="primary"):
                 f"{settings.API_BASE_URL}/reset-password",
                 json={"token": token.strip(), "new_password": new_password},
                 timeout=10,
+                verify=settings.SSL_VERIFY,
             )
 
             if resp.status_code >= 500:
