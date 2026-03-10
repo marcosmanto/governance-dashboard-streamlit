@@ -105,7 +105,16 @@ with col_avatar:
                         st.success("Avatar atualizado!")
                         st.rerun()
                     else:
-                        st.error(f"Erro no upload: {resp.text}")
+                        try:
+                            detail = resp.json().get("detail")
+                            if detail == "FILE_TOO_LARGE":
+                                st.error("O arquivo é muito grande. O limite máximo é de 2MB.")
+                            elif detail == "INVALID_FILE_TYPE":
+                                st.error("Tipo de arquivo inválido. Use apenas JPG ou PNG.")
+                            else:
+                                st.error(f"Erro no upload: {detail or resp.text}")
+                        except Exception:
+                            st.error(f"Erro no upload: {resp.text}")
                 except Exception as e:
                     st.error(f"Erro ao enviar arquivo: {e}")
     else:
