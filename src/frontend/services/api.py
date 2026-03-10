@@ -167,19 +167,19 @@ class APIClient:
     # -------------------------
 
     def listar_registros(self):
-        return self._request("GET", "/registros", timeout=self.timeout)
+        return self._request("GET", "/registros")
 
     def criar_registro(self, payload: dict):
-        return self._request("POST", "/registros", json=payload, timeout=self.timeout)
+        return self._request("POST", "/registros", json=payload)
 
     def atualizar_registro(self, id_: int, payload: dict):
-        return self._request("PUT", f"/registros/{id_}", json=payload, timeout=self.timeout)
+        return self._request("PUT", f"/registros/{id_}", json=payload)
 
     def deletar_registro(self, id_: int):
-        return self._request("DELETE", f"/registros/{id_}", timeout=self.timeout)
+        return self._request("DELETE", f"/registros/{id_}")
 
     def listar_auditoria(self, params: dict):
-        return self._request("GET", "/auditoria", params=params, timeout=self.timeout)
+        return self._request("GET", "/auditoria", params=params)
 
     def logout(self):
         return requests.post(
