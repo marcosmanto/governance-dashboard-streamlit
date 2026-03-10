@@ -76,6 +76,12 @@ with col_avatar:
         st.image(uploaded_file, width=150, caption="Pré-visualização")
 
         if st.button("Salvar Nova Foto", type="primary"):
+            # Validação de tamanho no frontend para uma melhor UX
+            if uploaded_file.size > 2 * 1024 * 1024:  # 2MB
+                st.error("O arquivo é muito grande. O limite máximo é de 2MB.")
+                # Não continua para o spinner/upload
+                st.stop()
+
             with st.spinner("Enviando..."):
                 try:
                     # Prepara o arquivo para envio multipart/form-data
