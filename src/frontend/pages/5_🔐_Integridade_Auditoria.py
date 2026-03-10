@@ -158,8 +158,14 @@ if st.button("⚓ Criar Âncora no Pastebin", type="primary", width="stretch"):
             resp = api._request("POST", "/admin/audit/anchor")
             if resp.status_code == 200:
                 data = resp.json()
-                st.success(f"Âncora criada com sucesso! URL: {data['url']}")
-                st.link_button("Abrir Âncora no Pastebin", url=data["url"])
+                details = data.get("details", {})
+                url = details.get("pastebin_url")
+
+                if url:
+                    st.success(f"Âncora criada com sucesso! URL: {url}")
+                    st.link_button("Abrir Âncora no Pastebin", url=url)
+                else:
+                    st.success("Âncora criada com sucesso (Local/Git).")
             else:
                 st.error(f"Erro ao criar âncora: {resp.text}")
         except Exception as e:
