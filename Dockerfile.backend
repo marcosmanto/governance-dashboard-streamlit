@@ -22,4 +22,4 @@ EXPOSE 8000
 # Comando de inicialização:
 # 1. Roda migrações (cria banco se não existir)
 # 2. Inicia o servidor Uvicorn em modo produção (sem reload)
-CMD ["sh", "-c", "python migrate.py --db ./data/dados.db --init-if-missing && uvicorn backend.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "python migrate.py --db ./data/dados.db --init-if-missing && python -m backend.users.bootstrap && uvicorn backend.main:app --host 0.0.0.0 --port 8000"]
