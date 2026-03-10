@@ -19,6 +19,15 @@ if not logger.handlers:
 def require_auth():
     api = st.session_state.get("api")
     user = st.session_state.get("user")
+    force_password_change = st.session_state.get("force_password_change", False)
+
+    # 🚨 Permite acesso à página de troca de senha mesmo sem um objeto 'user' completo,
+    # desde que o fluxo de troca obrigatória tenha sido iniciado.
+    if force_password_change:
+        if not api:
+            st.switch_page(Page.LOGIN.path)
+            st.stop()
+        return api, user or {}  # Retorna um dict vazio se user for None
 
     if not api or not user:
         st.switch_page(Page.LOGIN.path)

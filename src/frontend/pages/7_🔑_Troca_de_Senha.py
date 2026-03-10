@@ -75,7 +75,7 @@ if carregando:
         unsafe_allow_html=True,
     )
 
-must_change_password = st.session_state.get("must_change_password")
+force_password_change = st.session_state.get("force_password_change")
 
 error_message = st.session_state.get("error_message")
 
@@ -86,7 +86,7 @@ error_message = st.session_state.get("error_message")
 #         st.stop()
 
 
-st.title(f"🔑 Troca {'obrigatória ' if must_change_password else ''}de senha")
+st.title(f"🔑 Troca {'obrigatória ' if force_password_change else ''}de senha")
 
 
 # 🔐 Política de senha — UX clara
@@ -152,6 +152,7 @@ if carregando:
                 "new_password": new,
             },
             timeout=10,
+            verify=settings.SSL_VERIFY,
         )
 
     data = resp.json()
